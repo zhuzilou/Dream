@@ -5,14 +5,19 @@ class TradeAdvisor:
     def __init__(self):
         pass
 
-    def generate_plan(self, symbol, current_price, hist_df, ai_analysis):
+    def generate_plan(self, symbol, price_res, hist_df, ai_analysis, current_pos=None):
         """
-        根据 AI 分析和技术面生成交易计划
+        根据多维分析生成交易计划
+        price_res: {"price": float, "is_fallback": bool}
         ai_analysis: {'sentiment_score': 6.5, 'summary': '...', 'devils_advocate': '...'}
+        current_pos: {"quantity": float, "entry_price": float} or None
         """
         if hist_df is None or hist_df.empty:
             return None
             
+        current_price = price_res.get("price", 0)
+        is_fallback = price_res.get("is_fallback", False)
+        
         # 1. 计算技术指标
         hist_df = calculate_ma(hist_df)
         support, resistance = get_support_resistance(hist_df)
@@ -20,36 +25,78 @@ class TradeAdvisor:
         
         score = ai_analysis.get('sentiment_score', 0)
         summary = ai_analysis.get('summary', '无摘要')
+        risk_point = ai_analysis.get('devils_advocate', '暂无明确风险提示')
+        
+        # 2. 状态识别
+        has_pos = current_pos is not None and current_pos.get('quantity', 0) > 0
+        pos_qty = current_pos.get('quantity', 0) if has_pos else 0
         
         plan = {
             "symbol": symbol,
             "current_price": current_price,
+            "is_fallback": is_fallback,
             "trend": trend,
             "support": support,
             "resistance": resistance,
-            "action": "观望",
+            "action": "保持观望",
             "buy_price": None,
             "stop_loss": None,
             "take_profit": None,
             "reason": ""
         }
         
-        # 2. 决策逻辑 (示例)
-        # 如果利好 (>5) 且 趋势不是极弱
-        if score >= 6:
+        # 3. 多维决策逻辑
+        
+        # A. 技术面结论
+        tech_conclusion = f"当前处于 {trend}。支撑位 {support}，压力位 {resistance}。"
+        
+        # B. 决策引擎
+        reasons = []
+        if is_fallback:
+            reasons.append("⚠️ 注意：当前基于延时数据分析。")
+            
+        if score >= 6: # 极佳
             if trend != "空头排列 (弱趋势)":
-                plan["action"] = "建议买入/持仓"
-                # 建议在支撑位附近买入，或者当前价买入
-                plan["buy_price"] = round(max(current_price * 0.98, support), 2)
-                plan["stop_loss"] = round(plan["buy_price"] * 0.95, 2)
-                plan["take_profit"] = round(current_price * 1.10, 2)
-                plan["reason"] = f"AI 利好评分 {score} ({summary})。技术面呈 {trend}，建议依托支撑位分批介入。"
+                if not has_pos:
+                    plan["action"] = "建议建仓"
+                    plan["buy_price"] = round(max(current_price * 0.99, support), 2)
+                    reasons.append(f"AI 评分极高({score})，技术面未走坏。建议在支撑位附近建立底仓。")
+                else:
+                    plan["action"] = "建议加仓"
+                    reasons.append(f"AI 持续利好({score})。现有持仓 {pos_qty}，可考虑回撤支撑位时加仓。")
             else:
-                plan["reason"] = f"AI 虽有利好评分 {score} ({summary})，但技术面处于下降通道，建议等待筑底。"
-        elif score <= -6:
-            plan["action"] = "建议减仓/避险"
-            plan["reason"] = f"AI 提示重大风险 {score} ({summary})。请注意仓位控制。"
+                plan["action"] = "等待筑底"
+                reasons.append(f"AI 虽利好，但技术面处于下降通道，建议观察支撑位 {support} 是否稳固。")
+                
+        elif score >= 3: # 偏好
+            if has_pos:
+                plan["action"] = "继续持仓"
+                reasons.append("情绪偏暖，建议持有观望。")
+            else:
+                plan["action"] = "分批轻仓"
+                reasons.append("情绪中性偏好，可小量试探。")
+                
+        elif score <= -6: # 极差
+            if has_pos:
+                plan["action"] = "建议减仓/清仓"
+                reasons.append(f"🚨 AI 提示重大利空({score})。技术面风险大，建议保护利润或止损。")
+            else:
+                plan["action"] = "回避风险"
+                reasons.append(f"AI 评分极低({score})，严禁入场。")
         else:
-            plan["reason"] = f"情绪中性 ({score}: {summary})。目前无显著操作信号，建议保持观望。"
+            plan["action"] = "继续观望"
+            reasons.append(f"情绪中性({score})。暂无显著操作信号。")
+
+        # 止损止盈建议 (通用)
+        plan["stop_loss"] = round(support * 0.98, 2) if support else round(current_price * 0.95, 2)
+        plan["take_profit"] = round(resistance * 1.05, 2) if resistance else round(current_price * 1.15, 2)
+        
+        # 组装结构化理由
+        plan["reason"] = (
+            f"【技术面】{tech_conclusion}\n"
+            f"【情绪面】{summary}\n"
+            f"【风险点】{risk_point}\n"
+            f"【逻辑】{' '.join(reasons)}"
+        )
             
         return plan

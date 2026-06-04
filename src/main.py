@@ -81,17 +81,34 @@ def init_db():
             status TEXT DEFAULT 'active'
         )
     ''')
-    # 持仓表
+    # 持仓表 (增加了 quantity, last_known_price, last_updated)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS positions (
             symbol TEXT PRIMARY KEY,
             name TEXT,
             entry_price REAL,
+            quantity REAL DEFAULT 0,
             entry_date DATETIME DEFAULT (datetime('now', 'localtime')),
             stop_loss REAL,
             take_profit REAL,
+            last_known_price REAL,
+            last_updated DATETIME,
             current_strategy TEXT DEFAULT 'default',
             risk_level INTEGER DEFAULT 3
+        )
+    ''')
+
+    # 交易记录表 (新)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trade_journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            name TEXT,
+            action TEXT,
+            price REAL,
+            quantity REAL,
+            reason TEXT,
+            timestamp DATETIME DEFAULT (datetime('now', 'localtime'))
         )
     ''')
     
@@ -109,6 +126,15 @@ def init_db():
     if 'name' not in columns:
         logger.info("Migrating database: adding 'name' column to 'positions' table")
         cursor.execute("ALTER TABLE positions ADD COLUMN name TEXT")
+    if 'quantity' not in columns:
+        logger.info("Migrating database: adding 'quantity' column to 'positions' table")
+        cursor.execute("ALTER TABLE positions ADD COLUMN quantity REAL DEFAULT 0")
+    if 'last_known_price' not in columns:
+        logger.info("Migrating database: adding 'last_known_price' column to 'positions' table")
+        cursor.execute("ALTER TABLE positions ADD COLUMN last_known_price REAL")
+    if 'last_updated' not in columns:
+        logger.info("Migrating database: adding 'last_updated' column to 'positions' table")
+        cursor.execute("ALTER TABLE positions ADD COLUMN last_updated DATETIME")
 
     # 插入默认监控 (如果为空)
     cursor.execute('SELECT COUNT(*) FROM watchlist')
@@ -120,6 +146,17 @@ def init_db():
             
     conn.commit()
     conn.close()
+
+def get_position_by_symbol(symbol):
+    """从数据库获取指定股票的持仓信息"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT quantity, entry_price FROM positions WHERE symbol = ?', (symbol,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"quantity": row[0], "entry_price": row[1]}
+    return None
 
 def is_news_processed(news_id: str) -> bool:
     conn = sqlite3.connect(DB_PATH)
@@ -187,13 +224,15 @@ def job():
                 if not is_news_processed(news_id):
                     # 获取行情数据进行建模
                     hist_df = get_stock_hist(symbol)
-                    current_price = get_stock_current_price(symbol)
+                    price_res = get_stock_current_price(symbol)
+                    current_price = price_res["price"]
+                    current_pos = get_position_by_symbol(symbol)
                     
                     # AI 分析
                     analysis = analyst.analyze_news(title, content, symbol=f"{name}({symbol})")
                     
-                    # 生成策略计划
-                    plan = advisor.generate_plan(symbol, current_price, hist_df, analysis) if analysis else None
+                    # 生成策略计划 (传入 price_res 以便 advisor 知晓是否为降级数据)
+                    plan = advisor.generate_plan(symbol, price_res, hist_df, analysis, current_pos=current_pos) if analysis else None
                     
                     new_items.append({
                         'id': news_id, 'title': title, 'content': content, 

@@ -99,29 +99,41 @@ class FeishuListener:
 
             # C. 买入指令
             elif clean_text.startswith("买入"):
-                match = re.search(r'买入\s+([^\s]+)\s+([\d\.]+)', clean_text)
-                if match:
-                    query, price = match.groups()
-                    self.handle_add_to_positions(chat_id, query, float(price))
+                parts = re.split(r'\s+', clean_text)
+                if len(parts) >= 3:
+                    query = parts[1]
+                    try:
+                        price = float(parts[2])
+                        qty = float(parts[3]) if len(parts) >= 4 else 0
+                        self.handle_add_to_positions(chat_id, query, price, qty)
+                    except ValueError:
+                        self.notifier.send_text_message(chat_id, "⚠️ 价格或数量格式错误。示例：买入 纳百川 105.5 500", receive_id_type="chat_id")
                 else:
-                    self.notifier.send_text_message(chat_id, "⚠️ 请提供股票和买入价格。示例：买入 纳百川 105.5", receive_id_type="chat_id")
+                    self.notifier.send_text_message(chat_id, "⚠️ 请提供股票和买入价格。示例：买入 纳百川 105.5 500", receive_id_type="chat_id")
                 return
 
             # D. 卖出/移除指令
             elif clean_text.startswith("卖出") or clean_text.startswith("移除") or clean_text.startswith("删"):
-                query = re.sub(r'卖出|移除|删', '', clean_text).strip()
-                if query:
-                    self.handle_remove(chat_id, query)
+                parts = re.split(r'\s+', clean_text)
+                if len(parts) >= 2:
+                    query = parts[1]
+                    qty = parts[2] if len(parts) >= 3 else "全部"
+                    self.handle_remove(chat_id, query, qty)
                 else:
-                    self.notifier.send_text_message(chat_id, "⚠️ 请提供股票名称或代码。示例：卖出 纳百川", receive_id_type="chat_id")
+                    self.notifier.send_text_message(chat_id, "⚠️ 请提供股票名称或代码。示例：卖出 纳百川 200", receive_id_type="chat_id")
                 return
 
             # E. 池子列表
-            elif clean_text in ["池子", "列表", "监控池", "持仓", "清单"]:
+            elif clean_text in ["池子", "列表", "监控池", "持仓", "清单", "仓位"]:
                 self.list_pools(chat_id)
                 return
 
-            # F. 审核模式 (通过回复触发)
+            # F. 持仓分析 (新)
+            elif clean_text in ["持仓分析", "分析持仓", "体检", "诊断"]:
+                self.handle_portfolio_analysis(chat_id)
+                return
+
+            # G. 审核模式 (通过回复触发)
             elif audited_content:
                 self.handle_audit(chat_id, audited_content)
                 return
@@ -161,16 +173,18 @@ class FeishuListener:
             "1️⃣ **监控 [名称/代码]**\n"
             "> 加入观察池，开启每日 3 次的定时资讯抓取与 AI 情绪分析。\n"
             "> *示例：监控 纳百川*\n\n"
-            "2️⃣ **买入 [名称/代码] [成本]**\n"
-            "> 转入持仓管理，Frank 将建议止损位并开启高频风险盯盘。\n"
-            "> *示例：买入 301667 105.2*\n\n"
-            "3️⃣ **分析 [名称/代码]**\n"
-            "> 即时进行“技术面+资讯”深度建模，生成研报卡片。\n"
-            "> *示例：分析 贵州茅台*\n\n"
-            "4️⃣ **池子**\n"
+            "2️⃣ **买入 [名称/代码] [价格] [数量]**\n"
+            "> 录入/加仓。Frank 将计算摊薄成本并开启高频风险盯盘。\n"
+            "> *示例：买入 301667 105.2 500*\n\n"
+            "3️⃣ **卖出 [名称/代码] [数量/全部]**\n"
+            "> 减仓或清仓，并记录交易日记。\n"
+            "> *示例：卖出 301667 200*\n\n"
+            "4️⃣ **分析 [名称/代码]**\n"
+            "> 即时进行“技术+情绪+风险+仓位”深度建模。\n\n"
+            "5️⃣ **持仓分析**\n"
+            "> 对当前所有持仓进行一次整体“体检”，给出加减仓建议。\n\n"
+            "6️⃣ **池子**\n"
             "> 查看当前的【观察池】和【持仓池】清单。\n\n"
-            "5️⃣ **卖出 [名称/代码]**\n"
-            "> 从所有监控清单中彻底移除该股。\n\n"
             "💡 **进阶玩法**：直接回复某条资讯消息并输入“**审核**”，我会为您深入复核其逻辑。"
         )
         self.notifier.send_interactive_message(chat_id, "📖 Frank Gemini 使用指南", help_md, receive_id_type="chat_id")
@@ -256,40 +270,67 @@ class FeishuListener:
         finally:
             conn.close()
 
-    def handle_add_to_positions(self, chat_id, query, price):
+    def handle_add_to_positions(self, chat_id, query, price, qty=0):
         res = resolve_stock_symbol(query)
         if not res:
             self.notifier.send_text_message(chat_id, f"⚠️ 未能找到股票: {query}", receive_id_type="chat_id")
             return
         
         symbol, name = res['symbol'], res['name']
-        sl = round(price * 0.95, 2)
-        tp = round(price * 1.15, 2)
-        
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         try:
+            # 1. 检查是否已有持仓
+            cursor.execute('SELECT quantity, entry_price FROM positions WHERE symbol = ?', (symbol,))
+            row = cursor.fetchone()
+            
+            new_qty = qty
+            new_price = price
+            action_desc = "建仓"
+            
+            if row:
+                old_qty, old_price = row[0] or 0, row[1]
+                if old_qty > 0 and qty > 0:
+                    # 摊薄成本计算
+                    new_qty = old_qty + qty
+                    new_price = round((old_price * old_qty + price * qty) / new_qty, 3)
+                    action_desc = "加仓"
+                elif qty == 0:
+                    new_qty = old_qty
+            
+            sl = round(new_price * 0.95, 2)
+            tp = round(new_price * 1.15, 2)
+            
             cursor.execute('''
-                INSERT OR REPLACE INTO positions (symbol, name, entry_price, entry_date, stop_loss, take_profit)
-                VALUES (?, ?, ?, datetime("now", "localtime"), ?, ?)
-            ''', (symbol, name, price, sl, tp))
+                INSERT OR REPLACE INTO positions (symbol, name, entry_price, quantity, entry_date, stop_loss, take_profit)
+                VALUES (?, ?, ?, ?, datetime("now", "localtime"), ?, ?)
+            ''', (symbol, name, new_price, new_qty, sl, tp))
+            
+            # 2. 记录到交易日记
+            cursor.execute('''
+                INSERT INTO trade_journal (symbol, name, action, price, quantity, reason)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (symbol, name, "BUY", price, qty, f"Feishu指令{action_desc}"))
+            
             cursor.execute('DELETE FROM watchlist WHERE symbol = ?', (symbol,))
             conn.commit()
             
             msg = (
-                f"已为 **{name} ({symbol})** 建立仓位档案：\n"
-                f"- 买入成本: **{price}** 元\n"
-                f"- Frank 建议止损: **{sl}** 元\n"
-                f"- Frank 建议止盈: **{tp}** 元\n\n"
-                "🛡️ 系统已开启高频风险监控，一旦触发参考位或基本面反转将立即告警。"
+                f"✅ **{name} ({symbol})** {action_desc}登记成功：\n"
+                f"- 成交价格: **{price}** 元\n"
+                f"- 持仓数量: **{new_qty}** 股\n"
+                f"- 平均成本: **{new_price}** 元\n"
+                f"- Frank 建议止损: **{sl}** 元\n\n"
+                "🛡️ 高频风险监控已同步更新。"
             )
-            self.notifier.send_interactive_message(chat_id, "💰 持仓档案已建立", msg, receive_id_type="chat_id")
+            self.notifier.send_interactive_message(chat_id, f"💰 {action_desc}档案已更新", msg, receive_id_type="chat_id")
         except Exception as e:
             logger.error(f"DB Error: {e}")
+            self.notifier.send_text_message(chat_id, f"❌ 数据库操作失败: {e}", receive_id_type="chat_id")
         finally:
             conn.close()
 
-    def handle_remove(self, chat_id, query):
+    def handle_remove(self, chat_id, query, qty_str="全部"):
         symbol = query
         if not re.match(r'^\d{6}$', query):
             res = resolve_stock_symbol(query)
@@ -298,10 +339,49 @@ class FeishuListener:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         try:
-            cursor.execute('DELETE FROM watchlist WHERE symbol = ?', (symbol,))
-            cursor.execute('DELETE FROM positions WHERE symbol = ?', (symbol,))
+            # 获取当前持仓和名称
+            cursor.execute('SELECT name, quantity, entry_price FROM positions WHERE symbol = ?', (symbol,))
+            row = cursor.fetchone()
+            if not row:
+                # 仅在观察池中，直接移除
+                cursor.execute('DELETE FROM watchlist WHERE symbol = ?', (symbol,))
+                conn.commit()
+                self.notifier.send_text_message(chat_id, f"🗑️ 已移除对 {symbol} 的监控。", receive_id_type="chat_id")
+                return
+
+            name, old_qty, price = row[0], row[1] or 0, row[2]
+            sell_qty = 0
+            is_full_sell = False
+            
+            if qty_str == "全部":
+                is_full_sell = True
+                sell_qty = old_qty
+            else:
+                try:
+                    sell_qty = float(qty_str)
+                    if sell_qty >= old_qty:
+                        is_full_sell = True
+                        sell_qty = old_qty
+                except:
+                    is_full_sell = True
+                    sell_qty = old_qty
+
+            if is_full_sell:
+                cursor.execute('DELETE FROM positions WHERE symbol = ?', (symbol,))
+                msg = f"🚫 已清仓并移除 **{name} ({symbol})**。"
+            else:
+                new_qty = old_qty - sell_qty
+                cursor.execute('UPDATE positions SET quantity = ? WHERE symbol = ?', (new_qty, symbol))
+                msg = f"📉 **{name} ({symbol})** 已减仓 {sell_qty} 股，剩余 {new_qty} 股。"
+
+            # 记录交易日记
+            cursor.execute('''
+                INSERT INTO trade_journal (symbol, name, action, price, quantity, reason)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (symbol, name, "SELL", 0, sell_qty, "Feishu指令卖出"))
+            
             conn.commit()
-            self.notifier.send_text_message(chat_id, f"🗑️ 已移除对 {symbol} 的监控。", receive_id_type="chat_id")
+            self.notifier.send_text_message(chat_id, msg, receive_id_type="chat_id")
         except Exception as e:
             logger.error(f"DB Error: {e}")
         finally:
@@ -313,8 +393,12 @@ class FeishuListener:
         try:
             cursor.execute('SELECT symbol, name FROM watchlist')
             watchlist = [f"{row[1] or '未知'}({row[0]})" for row in cursor.fetchall()]
-            cursor.execute('SELECT symbol, name, entry_price, stop_loss FROM positions')
-            positions = [f"**{row[1] or '未知'}** ({row[0]}) | 成本:{row[2]} | 止损:{row[3]}" for row in cursor.fetchall()]
+            
+            cursor.execute('SELECT symbol, name, entry_price, quantity, stop_loss FROM positions')
+            positions = []
+            for row in cursor.fetchall():
+                name, symbol, price, qty, sl = row[1] or '未知', row[0], row[2], row[3] or 0, row[4]
+                positions.append(f"**{name}** ({symbol}) | {qty}股 | 成本:{price} | 止损:{sl}")
             
             md = "**👀 观察池 (Watchlist)**\n"
             md += (", ".join(watchlist) if watchlist else "*暂无股票*") + "\n\n"
@@ -326,13 +410,67 @@ class FeishuListener:
         finally:
             conn.close()
 
+    def handle_portfolio_analysis(self, chat_id):
+        """对所有持仓进行体检"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT symbol, name, quantity, entry_price FROM positions')
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            self.notifier.send_text_message(chat_id, "🛡️ 您目前没有任何持仓。可以尝试输入 `分析 股票名称` 来寻找机会。", receive_id_type="chat_id")
+            return
+
+        self.notifier.send_text_message(chat_id, f"🔍 正在对 {len(rows)} 只持仓股票进行深度体检，请稍候...", receive_id_type="chat_id")
+        
+        reports = []
+        for symbol, name, qty, price in rows:
+            # 复用即时分析的逻辑片段，但合并输出
+            news_df = get_stock_news(symbol)
+            hist_df = get_stock_hist(symbol)
+            price_res = get_stock_current_price(symbol)
+            
+            title = "无近期新闻"
+            content = ""
+            if not news_df.empty:
+                title = str(news_df.iloc[0].get('新闻标题', ''))
+                content = str(news_df.iloc[0].get('新闻内容', ''))
+            
+            ai_analysis = self.analyst.analyze_news(title, content, symbol=symbol)
+            current_pos = {"quantity": qty, "entry_price": price}
+            plan = self.advisor.generate_plan(symbol, price_res, hist_df, ai_analysis, current_pos=current_pos)
+            
+            if plan:
+                reports.append(
+                    f"### 📌 {name or symbol} ({qty}股)\n"
+                    f"- **建议**: **{plan['action']}**\n"
+                    f"- **理由**: {plan['reason']}\n"
+                )
+        
+        full_md = "\n".join(reports)
+        self.notifier.send_interactive_message(chat_id, "📊 Frank 持仓深度体检报告", full_md, receive_id_type="chat_id")
+
+    def _get_position(self, symbol):
+        """获取本地持仓数据"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT quantity, entry_price FROM positions WHERE symbol = ?', (symbol,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {"quantity": row[0], "entry_price": row[1]}
+        return None
+
     def process_instant_analysis(self, chat_id, symbol, name=""):
         """执行即时分析逻辑"""
         self.notifier.send_text_message(chat_id, f"🔍 收到指令！正在为 {name or symbol} 搜集资讯并建模...", receive_id_type="chat_id")
         
         news_df = get_stock_news(symbol)
         hist_df = get_stock_hist(symbol)
-        current_price = get_stock_current_price(symbol)
+        price_res = get_stock_current_price(symbol)
+        current_price = price_res["price"]
+        current_pos = self._get_position(symbol)
         
         if news_df is None or news_df.empty:
             self.notifier.send_text_message(chat_id, f"⚠️ 暂时没有搜寻到关于 {symbol} 的近期资讯。", receive_id_type="chat_id")
@@ -346,15 +484,16 @@ class FeishuListener:
             self.notifier.send_text_message(chat_id, "❌ AI 分析过程出错，请检查 API 状态。", receive_id_type="chat_id")
             return
 
-        plan = self.advisor.generate_plan(symbol, current_price, hist_df, ai_analysis)
+        plan = self.advisor.generate_plan(symbol, price_res, hist_df, ai_analysis, current_pos=current_pos)
         
         if plan:
             action = plan['action']
             emoji = "🎯" if "买入" in action else ("🛡️" if "减仓" in action else "💤")
             msg_title = f"{emoji} | {name or symbol} 综合建议"
             
+            warning = " (⚠️ 延时数据)" if price_res.get("is_fallback") else ""
             md = (
-                f"💰 **当前价**: {current_price} 元\n"
+                f"💰 **当前价**: {current_price} 元{warning}\n"
                 f"📈 **技术趋势**: {plan['trend']}\n\n"
                 f"💡 **AI 核心结论**:\n> {ai_analysis.get('summary', '无')}\n\n"
                 f"✅ **建议操作**: **{action}**\n"

@@ -59,18 +59,35 @@ def get_stock_hist(symbol: str, days: int = 60) -> pd.DataFrame:
         logger.error(f"Error fetching hist data for {symbol}: {e}")
         return pd.DataFrame()
 
-def get_stock_current_price(symbol: str) -> float:
-    """获取实时最新价 (新浪源)"""
+def get_stock_current_price(symbol: str) -> dict:
+    """获取最新价格，支持降级机制"""
+    result = {"price": 0.0, "source": "unknown", "is_fallback": False}
+    
+    # 尝试 1: 实时数据 (新浪源)
     try:
         formatted_symbol = _format_symbol(symbol)
         df = ak.stock_zh_a_spot()
         row = df[df['代码'] == formatted_symbol]
         if not row.empty:
-            return float(row.iloc[0]['最新价'])
-        return 0.0
+            result["price"] = float(row.iloc[0]['最新价'])
+            result["source"] = "realtime_sina"
+            return result
     except Exception as e:
-        logger.error(f"Error fetching spot price for {symbol}: {e}")
-        return 0.0
+        logger.warning(f"Error fetching realtime price for {symbol}: {e}")
+
+    # 尝试 2: 降级到历史日线 (取最后一根 K 线)
+    try:
+        logger.info(f"Triggering fallback to daily hist for {symbol}...")
+        df_hist = get_stock_hist(symbol, days=5)
+        if not df_hist.empty:
+            result["price"] = float(df_hist.iloc[-1]['close'])
+            result["source"] = "daily_hist_fallback"
+            result["is_fallback"] = True
+            return result
+    except Exception as e:
+        logger.error(f"Fallback failed for {symbol}: {e}")
+
+    return result
 
 def get_stock_audit_data(symbol: str) -> dict:
     """获取审计所需的实时数据：当前价、涨跌幅、换手率、5日涨跌幅"""
@@ -78,7 +95,8 @@ def get_stock_audit_data(symbol: str) -> dict:
         "price": 0.0,
         "change_pct": 0.0,
         "turnover": 0.0,
-        "five_day_change": 0.0
+        "five_day_change": 0.0,
+        "is_fallback": False
     }
     try:
         # 1. 实时数据 (东财源通常包含换手率)
@@ -91,17 +109,22 @@ def get_stock_audit_data(symbol: str) -> dict:
                 data["turnover"] = float(row.iloc[0]['换手率'])
         except Exception as e:
             logger.warning(f"Error fetching spot data from EM for {symbol}: {e}")
-            # 退而求其次使用新浪源
-            price = get_stock_current_price(symbol)
-            data["price"] = price
+            # 退而求其次使用主价格获取函数 (自带降级)
+            price_res = get_stock_current_price(symbol)
+            data["price"] = price_res["price"]
+            data["is_fallback"] = price_res["is_fallback"]
 
         # 2. 5日涨跌幅
-        df_hist = get_stock_hist(symbol, days=15) # 取多一点确保有5个交易日
+        df_hist = get_stock_hist(symbol, days=15) 
         if not df_hist.empty and len(df_hist) >= 6:
-            # 5日涨跌幅 = (今日收盘 - 5日前收盘) / 5日前收盘
             latest_close = float(df_hist.iloc[-1]['close'])
             five_days_ago_close = float(df_hist.iloc[-6]['close'])
             data["five_day_change"] = round((latest_close - five_days_ago_close) / five_days_ago_close * 100, 2)
+            
+            # 如果上方实时数据获取失败，这里也可以补充 price
+            if data["price"] == 0:
+                data["price"] = latest_close
+                data["is_fallback"] = True
             
     except Exception as e:
         logger.error(f"Error fetching audit data for {symbol}: {e}")
