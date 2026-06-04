@@ -1,0 +1,266 @@
+import os
+from dotenv import load_dotenv
+load_dotenv() # 加载 .env 文件中的环境变量
+
+import sqlite3
+import time
+import schedule
+import threading
+from loguru import logger
+import hashlib
+from scraper.akshare_client import get_cls_telegraph, get_stock_news, get_stock_hist, get_stock_current_price
+from generator.markdown_gen import generate_markdown_report
+from notifier.feishu import FeishuBot
+from analyst.llm_engine import Analyst
+from strategist.trade_advisor import TradeAdvisor
+from listener.feishu_listener import FeishuListener
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "scout.db")
+if os.path.exists("/app/data/scout.db"):
+    DB_PATH = "/app/data/scout.db"
+
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "app.log")
+if os.path.exists("/app/logs"):
+    LOG_PATH = "/app/logs/app.log"
+elif os.path.exists("/app/data/logs"):
+    LOG_PATH = "/app/data/logs/app.log"
+
+# Configure loguru
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+logger.add(
+    LOG_PATH, 
+    rotation="00:00", 
+    retention="10 days", 
+    level="INFO", 
+    encoding="utf-8", 
+    enqueue=True,
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
+)
+
+def get_all_target_symbols():
+    """从数据库获取所有需要监控的股票代码与名称 (观察池 + 持仓池)"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    symbols = {} # {symbol: name}
+    # 观察池
+    cursor.execute('SELECT symbol, name FROM watchlist WHERE status = "active"')
+    for row in cursor.fetchall():
+        symbols[row[0]] = row[1] or row[0]
+    # 持仓池
+    cursor.execute('SELECT symbol, name FROM positions')
+    for row in cursor.fetchall():
+        symbols[row[0]] = row[1] or row[0]
+    conn.close()
+    
+    # 如果数据库为空，返回默认值
+    if not symbols:
+        return {"301667": "纳百川", "600021": "上海电力"}
+    return symbols
+
+def init_db():
+    if DB_PATH != ":memory:":
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # 历史新闻表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS news (
+            id TEXT PRIMARY KEY,
+            source TEXT,
+            timestamp DATETIME DEFAULT (datetime('now', 'localtime')),
+            analysis TEXT
+        )
+    ''')
+    # 观察池表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watchlist (
+            symbol TEXT PRIMARY KEY,
+            name TEXT,
+            added_at DATETIME DEFAULT (datetime('now', 'localtime')),
+            strategy_type TEXT DEFAULT 'default',
+            status TEXT DEFAULT 'active'
+        )
+    ''')
+    # 持仓表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS positions (
+            symbol TEXT PRIMARY KEY,
+            name TEXT,
+            entry_price REAL,
+            entry_date DATETIME DEFAULT (datetime('now', 'localtime')),
+            stop_loss REAL,
+            take_profit REAL,
+            current_strategy TEXT DEFAULT 'default',
+            risk_level INTEGER DEFAULT 3
+        )
+    ''')
+    
+    # 数据库迁移逻辑：检查并添加 missing columns
+    # 检查 watchlist 表
+    cursor.execute("PRAGMA table_info(watchlist)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'name' not in columns:
+        logger.info("Migrating database: adding 'name' column to 'watchlist' table")
+        cursor.execute("ALTER TABLE watchlist ADD COLUMN name TEXT")
+    
+    # 检查 positions 表
+    cursor.execute("PRAGMA table_info(positions)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'name' not in columns:
+        logger.info("Migrating database: adding 'name' column to 'positions' table")
+        cursor.execute("ALTER TABLE positions ADD COLUMN name TEXT")
+
+    # 插入默认监控 (如果为空)
+    cursor.execute('SELECT COUNT(*) FROM watchlist')
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('SELECT COUNT(*) FROM positions')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('INSERT INTO watchlist (symbol, name) VALUES (?, ?)', ("301667", "纳百川"))
+            cursor.execute('INSERT INTO watchlist (symbol, name) VALUES (?, ?)', ("600021", "上海电力"))
+            
+    conn.commit()
+    conn.close()
+
+def is_news_processed(news_id: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM news WHERE id = ?', (news_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
+
+def mark_news_processed(news_id: str, source: str, analysis: str = ""):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR IGNORE INTO news (id, source, timestamp, analysis) VALUES (?, ?, datetime("now", "localtime"), ?)', (news_id, source, analysis))
+    conn.commit()
+    conn.close()
+
+def generate_id(text: str) -> str:
+    return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+def job():
+    logger.info("Starting scheduled news fetching job for Frank Gemini...")
+    init_db()
+    
+    new_items = []
+    analyst = Analyst()
+    advisor = TradeAdvisor()
+    
+    # 1. 抓取全球财经快讯 (原财联社电报)
+    cls_df = get_cls_telegraph()
+    if not cls_df.empty:
+        for _, row in cls_df.head(10).iterrows(): 
+            # 东财接口字段: 标题, 摘要, 发布时间, 链接
+            content = str(row.get('摘要', row.get('content', '')))
+            title = str(row.get('标题', row.get('title', '')))
+            full_time = str(row.get('发布时间', row.get('time', '')))
+            
+            if not content and title: # 有些快讯只有标题
+                content = title
+            if not content: continue
+            
+            news_id = generate_id(f"em_global_{full_time}_{content[:20]}")
+            
+            if not is_news_processed(news_id):
+                analysis = analyst.analyze_news(title, content)
+                new_items.append({
+                    'id': news_id, 'title': title, 'content': content, 
+                    'time': full_time, 'source': '全球财经快讯', 'analysis': analysis
+                })
+                import json
+                mark_news_processed(news_id, '全球财经快讯', json.dumps(analysis) if analysis else "")
+
+    # 2. 抓取个股新闻并生成策略建议
+    symbols_map = get_all_target_symbols()
+    for symbol, name in symbols_map.items():
+        news_df = get_stock_news(symbol)
+        if not news_df.empty:
+            for _, row in news_df.head(5).iterrows():
+                title = str(row.get('新闻标题', row.get('title', '')))
+                content = str(row.get('新闻内容', row.get('content', '')))
+                pub_time = str(row.get('发布时间', row.get('time', '')))
+                
+                if not title: continue
+                news_id = generate_id(f"em_{symbol}_{pub_time}_{title}")
+                
+                if not is_news_processed(news_id):
+                    # 获取行情数据进行建模
+                    hist_df = get_stock_hist(symbol)
+                    current_price = get_stock_current_price(symbol)
+                    
+                    # AI 分析
+                    analysis = analyst.analyze_news(title, content, symbol=f"{name}({symbol})")
+                    
+                    # 生成策略计划
+                    plan = advisor.generate_plan(symbol, current_price, hist_df, analysis) if analysis else None
+                    
+                    new_items.append({
+                        'id': news_id, 'title': title, 'content': content, 
+                        'time': pub_time, 'source': f'东方财富-{name}', 
+                        'analysis': analysis, 'plan': plan
+                    })
+                    import json
+                    mark_news_processed(news_id, f'东方财富-{name}', json.dumps(analysis) if analysis else "")
+
+    # 3. 推送通知
+    if new_items:
+        generate_markdown_report(new_items)
+        feishu = FeishuBot()
+        chat_id = os.getenv("FEISHU_CHAT_ID")
+        if chat_id:
+            for item in new_items[:3]:
+                analysis = item.get('analysis')
+                plan = item.get('plan')
+                if analysis:
+                    if plan: # 如果是个股新闻且有策略建议
+                        action = plan['action']
+                        emoji = "🎯" if "买入" in action else ("🛡️" if "减仓" in action else "💤")
+                        msg_title = f"{emoji} | {item['source']} - 发现新策略"
+                        summary_text = [
+                            ["text", f"📰 资讯: {item['title']}"],
+                            ["text", f"✅ 建议操作: {action}"],
+                            ["text", f"📊 参考位: 买入 {plan['buy_price'] or '--'} | 止损 {plan['stop_loss'] or '--'} | 止盈 {plan['take_profit'] or '--'}"],
+                            ["text", f"📝 理由: {plan['reason']}"]
+                        ]
+                        feishu.send_post_message(chat_id, msg_title, summary_text, receive_id_type="chat_id")
+                    else: # 全局新闻或无策略建议
+                        score = analysis.get('sentiment_score', 0)
+                        emoji = "🚀 利好" if score > 3 else ("⚠️ 利空" if score < -3 else "⚖️ 中性")
+                        msg_title = f"{emoji} | {item['source']} - {item['title']}"
+                        summary_text = [
+                            ["text", f"📊 情绪评分: {score}"],
+                            ["text", f"💡 核心结论: {analysis.get('summary', '')}"],
+                            ["text", f"🛡️ 风险提示: {analysis.get('devils_advocate', '')}"]
+                        ]
+                        feishu.send_post_message(chat_id, msg_title, summary_text, receive_id_type="chat_id")
+    else:
+        logger.info("Job completed. No new news.")
+
+def run_scheduler():
+    schedule.every().day.at("08:30").do(job)
+    schedule.every().day.at("12:30").do(job)
+    schedule.every().day.at("18:30").do(job)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+def main():
+    logger.info("Frank Gemini is running with Strategist upgrade...")
+    
+    # 0. 初始化数据库 (确保表结构存在)
+    init_db()
+    
+    # 1. 启动定时抓取 (后台线程)
+    def background_tasks():
+        run_scheduler() # 仅进入定时循环，不再启动即跑一次
+        
+    bg_thread = threading.Thread(target=background_tasks, daemon=True)
+    bg_thread.start()
+    
+    # 2. 启动飞书 WebSocket 监听 (主线程阻塞)
+    listener = FeishuListener()
+    listener.start()
+
+if __name__ == "__main__":
+    main()

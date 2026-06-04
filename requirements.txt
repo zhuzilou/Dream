@@ -1,0 +1,7 @@
+akshare
+pandas
+schedule
+loguru
+requests
+lark-oapi
+python-dotenv

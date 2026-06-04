@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  scout:
+    image: dream-frank:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: dream_frank_gemini
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./src:/app/src
+      - ./tests:/app/tests
+    environment:
+      - TZ=Asia/Shanghai
+      - FEISHU_APP_ID=cli_aa89fecd95f8dcce
+      - FEISHU_APP_SECRET=5LX6SnpoaC6JM5FVUdxhLc64ZRNJwSXn
+      - FEISHU_CHAT_ID=oc_4e6b6a580ff7e8221da473791d116e42
+      - MINIMAX_API_KEY=sk-cp-yB0Vqxzhlo4o535OK7dFCAGCPY96iJu490RiIex2bymWMYIkdXvMEWJhGOmxNs19u9eeh5hW1EZo1o9oC5DIKkct7uxZNtPiMqh1OaLYK0pRBlKAL2xbEU4

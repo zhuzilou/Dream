@@ -1,0 +1,6 @@
+{
+  "name": "superpowers-openspec",
+  "version": "2.4.0",
+  "contextFileName": "GEMINI.md",
+  "model_hint": "sonnet"
+}
