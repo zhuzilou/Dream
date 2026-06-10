@@ -15,6 +15,12 @@ class TradeAdvisor:
         if hist_df is None or hist_df.empty:
             return None
             
+        # 兼容性处理: 如果 price_res 是 float，则转换为 dict 格式
+        if isinstance(price_res, (int, float)):
+            price_res = {"price": float(price_res), "is_fallback": False}
+        elif not isinstance(price_res, dict):
+            price_res = {"price": 0.0, "is_fallback": False}
+
         current_price = price_res.get("price", 0)
         is_fallback = price_res.get("is_fallback", False)
         
@@ -52,6 +58,7 @@ class TradeAdvisor:
         
         # B. 决策引擎
         reasons = []
+        scenarios = []
         if is_fallback:
             reasons.append("⚠️ 注意：当前基于延时数据分析。")
             
@@ -61,17 +68,22 @@ class TradeAdvisor:
                     plan["action"] = "建议建仓"
                     plan["buy_price"] = round(max(current_price * 0.99, support), 2)
                     reasons.append(f"AI 评分极高({score})，技术面未走坏。建议在支撑位附近建立底仓。")
+                    scenarios.append(f"1. **如果** 明日企稳并放量突破 {resistance}，可追加 1 成仓。")
+                    scenarios.append(f"2. **如果** 缩量回踩 {support} 不破，是最佳补仓点。")
                 else:
                     plan["action"] = "建议加仓"
                     reasons.append(f"AI 持续利好({score})。现有持仓 {pos_qty}，可考虑回撤支撑位时加仓。")
+                    scenarios.append(f"1. **如果** 股价站稳 {current_price}，建议持股待涨。")
             else:
                 plan["action"] = "等待筑底"
                 reasons.append(f"AI 虽利好，但技术面处于下降通道，建议观察支撑位 {support} 是否稳固。")
+                scenarios.append(f"1. **如果** 在 {support} 附近出现长下影线或放量反弹，则确认底部。")
                 
         elif score >= 3: # 偏好
             if has_pos:
                 plan["action"] = "继续持仓"
                 reasons.append("情绪偏暖，建议持有观望。")
+                scenarios.append(f"1. **如果** 跌破 {support}，建议先行减仓规避风险。")
             else:
                 plan["action"] = "分批轻仓"
                 reasons.append("情绪中性偏好，可小量试探。")
@@ -80,23 +92,23 @@ class TradeAdvisor:
             if has_pos:
                 plan["action"] = "建议减仓/清仓"
                 reasons.append(f"🚨 AI 提示重大利空({score})。技术面风险大，建议保护利润或止损。")
+                scenarios.append(f"1. **如果** 明日不能快速收复 {current_price}，建议果断减仓 50%。")
+                scenarios.append(f"2. **如果** 连续放量杀跌，则考虑空仓避险。")
             else:
                 plan["action"] = "回避风险"
                 reasons.append(f"AI 评分极低({score})，严禁入场。")
+                scenarios.append(f"1. **如果** 市场整体情绪未回暖，哪怕出现小反弹也不要进场抢反弹。")
         else:
             plan["action"] = "继续观望"
             reasons.append(f"情绪中性({score})。暂无显著操作信号。")
+            scenarios.append(f"1. **如果** 股价在 {support} 与 {resistance} 之间震荡，建议观望。")
 
         # 止损止盈建议 (通用)
         plan["stop_loss"] = round(support * 0.98, 2) if support else round(current_price * 0.95, 2)
         plan["take_profit"] = round(resistance * 1.05, 2) if resistance else round(current_price * 1.15, 2)
         
-        # 组装结构化理由
-        plan["reason"] = (
-            f"【技术面】{tech_conclusion}\n"
-            f"【情绪面】{summary}\n"
-            f"【风险点】{risk_point}\n"
-            f"【逻辑】{' '.join(reasons)}"
-        )
+        # 组装结构化理由与推演
+        plan["reason"] = ' '.join(reasons)
+        plan["scenario_text"] = "\n".join(scenarios) if scenarios else "暂无明确推演，建议严格执行止损点。"
             
         return plan

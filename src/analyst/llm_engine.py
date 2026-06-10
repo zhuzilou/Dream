@@ -40,26 +40,31 @@ class Analyst:
     def analyze_news(self, title, content, symbol=""):
         """
         使用 MiniMax 对新闻进行情绪分析
-        引入 Devil's Advocate 模式：强制寻找反面逻辑
+        资深分析师模式：过滤杂音，直击核心逻辑，提供“推演建筑师”所需的基础分析。
         """
         if not self.api_key:
             logger.error("MINIMAX_API_KEY not found.")
             return None
 
         prompt = f"""
-你是一名资深的 A 股分析师。请分析以下新闻对股票 {symbol if symbol else '相关行业'} 的影响。
+你是一名在 A 股市场深耕 20 年的资深首席分析师。你的任务是分析以下新闻对股票 {symbol if symbol else '相关行业'} 的真实、深层次影响，并过滤掉那些“大家都知道”的平庸信息。
 
 新闻标题：{title}
 新闻内容：{content}
 
+你的职责：
+1. **去伪存真**：如果新闻只是陈词滥调，请在 summary 中直言其影响力有限。
+2. **逻辑穿透**：分析该事件会如何通过产业链或资金面传导至二级市场股价。
+3. **极端假设**：强制执行“魔鬼代言人”模式，假设你是空头，你会如何利用这条新闻攻击该标的？
+
 请按以下格式输出 JSON：
 {{
   "sentiment_score": 小数 (范围 -10 到 10，-10 为极端利空，10 为极端利好),
-  "analysis": "简洁的利好分析",
-  "devils_advocate": "强制寻找一个潜在的反面风险或利空因素",
-  "summary": "一句话核心结论"
+  "analysis": "核心逻辑链分析 (100字以内)",
+  "devils_advocate": "极端风险推演/空头视角",
+  "summary": "资深分析师的一句话定调 (如：'典型的利好出尽'，'被市场忽视的关键拐点' 等)"
 }}
-注意：输出必须仅为 JSON 格式，不要包含其他文字。不要在 JSON 的属性值中使用未转义的双引号。
+注意：输出必须仅为 JSON 格式。确保 JSON 字段值的双引号被正确转义。
 """
         
         headers = {

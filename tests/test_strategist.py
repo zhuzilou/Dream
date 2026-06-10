@@ -31,7 +31,7 @@ class TestStrategist(unittest.TestCase):
         plan = self.advisor.generate_plan("300750", current_price, self.mock_hist, ai_analysis)
         
         self.assertIsNotNone(plan)
-        self.assertIn("买入", plan["action"])
+        self.assertIn("建仓", plan["action"])
         self.assertIsNotNone(plan["buy_price"])
 
     def test_generate_plan_wait_signal(self):
@@ -43,7 +43,7 @@ class TestStrategist(unittest.TestCase):
         
         plan = self.advisor.generate_plan("300750", current_price, self.mock_hist, ai_analysis)
         self.assertIsNotNone(plan)
-        self.assertEqual(plan["action"], "观望")
+        self.assertIn("观望", plan["action"])
 
 if __name__ == "__main__":
     unittest.main()

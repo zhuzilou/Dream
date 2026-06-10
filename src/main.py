@@ -8,7 +8,7 @@ import schedule
 import threading
 from loguru import logger
 import hashlib
-from scraper.akshare_client import get_cls_telegraph, get_stock_news, get_stock_hist, get_stock_current_price
+from scraper.akshare_client import get_stock_news, get_stock_hist, get_stock_current_price, get_market_index_data
 from generator.markdown_gen import generate_markdown_report
 from notifier.feishu import FeishuBot
 from analyst.llm_engine import Analyst
@@ -180,35 +180,33 @@ def job():
     logger.info("Starting scheduled news fetching job for Frank Gemini...")
     init_db()
     
-    new_items = []
+    feishu = FeishuBot()
+    chat_id = os.getenv("FEISHU_CHAT_ID")
     analyst = Analyst()
     advisor = TradeAdvisor()
     
-    # 1. 抓取全球财经快讯 (原财联社电报)
-    cls_df = get_cls_telegraph()
-    if not cls_df.empty:
-        for _, row in cls_df.head(10).iterrows(): 
-            # 东财接口字段: 标题, 摘要, 发布时间, 链接
-            content = str(row.get('摘要', row.get('content', '')))
-            title = str(row.get('标题', row.get('title', '')))
-            full_time = str(row.get('发布时间', row.get('time', '')))
-            
-            if not content and title: # 有些快讯只有标题
-                content = title
-            if not content: continue
-            
-            news_id = generate_id(f"em_global_{full_time}_{content[:20]}")
-            
-            if not is_news_processed(news_id):
-                analysis = analyst.analyze_news(title, content)
-                new_items.append({
-                    'id': news_id, 'title': title, 'content': content, 
-                    'time': full_time, 'source': '全球财经快讯', 'analysis': analysis
-                })
-                import json
-                mark_news_processed(news_id, '全球财经快讯', json.dumps(analysis) if analysis else "")
+    # 0. 大盘波动监测 (主动哨兵模式)
+    index_df = get_market_index_data()
+    if not index_df.empty and chat_id:
+        for _, row in index_df.iterrows():
+            change_pct = float(row.get('涨跌幅', 0))
+            name = row.get('名称', '指数')
+            if change_pct <= -1.0: # 跌幅超过 1% 触发定心丸
+                logger.warning(f"Market crash detected: {name} {change_pct}%")
+                # AI 分析大盘
+                analysis = analyst.chat(f"当前{name}跌幅达 {change_pct}%，作为首席分析师，请简要分析下跌原因并给出心理支撑。")
+                title = f"🚨 大盘波动警报 | {name} 紧急定心丸"
+                md_text = f"**【波动情况】**: {name} 当前跌幅 **{change_pct}%**\n\n"
+                md_text += f"**【分析师说】**:\n{analysis}\n\n"
+                md_text += f"**【推演预案】**: 此时建议保持冷静，检查个股是否触及硬损位，未触及则建议卧倒不动。详情请看下方个股推演。"
+                feishu.send_interactive_message(chat_id, title, md_text, receive_id_type="chat_id")
 
-    # 2. 抓取个股新闻并生成策略建议
+    new_items = []
+    
+    # 1. 移除全球财经快讯 (用户认为其信息密度低且大家都知道)
+    # 此处不再调用 get_cls_telegraph()
+
+    # 2. 抓取个股新闻并生成策略推演
     symbols_map = get_all_target_symbols()
     for symbol, name in symbols_map.items():
         news_df = get_stock_news(symbol)
@@ -225,54 +223,49 @@ def job():
                     # 获取行情数据进行建模
                     hist_df = get_stock_hist(symbol)
                     price_res = get_stock_current_price(symbol)
-                    current_price = price_res["price"]
                     current_pos = get_position_by_symbol(symbol)
                     
-                    # AI 分析
+                    # AI 分析 (采用资深分析师角色)
                     analysis = analyst.analyze_news(title, content, symbol=f"{name}({symbol})")
                     
-                    # 生成策略计划 (传入 price_res 以便 advisor 知晓是否为降级数据)
+                    # 生成推演预案 (Scenario Architect)
                     plan = advisor.generate_plan(symbol, price_res, hist_df, analysis, current_pos=current_pos) if analysis else None
                     
                     new_items.append({
                         'id': news_id, 'title': title, 'content': content, 
-                        'time': pub_time, 'source': f'东方财富-{name}', 
+                        'time': pub_time, 'source': f'{name}', 
                         'analysis': analysis, 'plan': plan
                     })
                     import json
                     mark_news_processed(news_id, f'东方财富-{name}', json.dumps(analysis) if analysis else "")
 
-    # 3. 推送通知
+    # 3. 推送定心丸推演卡片
     if new_items:
-        generate_markdown_report(new_items)
         feishu = FeishuBot()
         chat_id = os.getenv("FEISHU_CHAT_ID")
         if chat_id:
             for item in new_items[:3]:
-                analysis = item.get('analysis')
                 plan = item.get('plan')
-                if analysis:
-                    if plan: # 如果是个股新闻且有策略建议
-                        action = plan['action']
-                        emoji = "🎯" if "买入" in action else ("🛡️" if "减仓" in action else "💤")
-                        msg_title = f"{emoji} | {item['source']} - 发现新策略"
-                        summary_text = [
-                            ["text", f"📰 资讯: {item['title']}"],
-                            ["text", f"✅ 建议操作: {action}"],
-                            ["text", f"📊 参考位: 买入 {plan['buy_price'] or '--'} | 止损 {plan['stop_loss'] or '--'} | 止盈 {plan['take_profit'] or '--'}"],
-                            ["text", f"📝 理由: {plan['reason']}"]
-                        ]
-                        feishu.send_post_message(chat_id, msg_title, summary_text, receive_id_type="chat_id")
-                    else: # 全局新闻或无策略建议
-                        score = analysis.get('sentiment_score', 0)
-                        emoji = "🚀 利好" if score > 3 else ("⚠️ 利空" if score < -3 else "⚖️ 中性")
-                        msg_title = f"{emoji} | {item['source']} - {item['title']}"
-                        summary_text = [
-                            ["text", f"📊 情绪评分: {score}"],
-                            ["text", f"💡 核心结论: {analysis.get('summary', '')}"],
-                            ["text", f"🛡️ 风险提示: {analysis.get('devils_advocate', '')}"]
-                        ]
-                        feishu.send_post_message(chat_id, msg_title, summary_text, receive_id_type="chat_id")
+                analysis = item.get('analysis')
+                if plan:
+                    # 构造“推演建筑师”卡片内容
+                    title = f"🕵️‍♂️ Frank | {item['source']} 深度推演预案"
+                    
+                    # 核心逻辑总结 (倾向B)
+                    summary = analysis.get('summary', '无摘要')
+                    
+                    # 构造推演 Markdown (倾向C)
+                    md_text = f"**【核心结论】**\n{summary}\n\n"
+                    md_text += f"**【当前价】**: {plan['current_price']} 元\n"
+                    md_text += f"**【当前建议】**: **{plan['action']}**\n\n"
+                    
+                    # 从 plan 中提取推演逻辑 (稍后会在 advisor 中增强)
+                    md_text += f"**【操作推演 (Scenario Architect)】**\n"
+                    md_text += f"{plan.get('scenario_text', plan['reason'])}\n\n"
+                    
+                    md_text += f"**【风险防御】**\n{analysis.get('devils_advocate', '暂无')}"
+                    
+                    feishu.send_interactive_message(chat_id, title, md_text, receive_id_type="chat_id")
     else:
         logger.info("Job completed. No new news.")
 

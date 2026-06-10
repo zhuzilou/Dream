@@ -187,4 +187,15 @@ def resolve_stock_symbol(query: str) -> dict:
         logger.error(f"Error resolving stock symbol for {query}: {e}")
         return None
 
-import re
+def get_market_index_data() -> pd.DataFrame:
+    """获取主要大盘指数实时数据"""
+    try:
+        # 获取指数行情 (东财源)
+        df = ak.stock_zh_index_spot_em()
+        # 常见指数代码：上证(000001), 创业板(399006), 深证成指(399001)
+        target_indices = ['000001', '399006', '399001']
+        if df is not None and not df.empty:
+            return df[df['代码'].isin(target_indices)]
+    except Exception as e:
+        logger.error(f"Error fetching market index data: {e}")
+    return pd.DataFrame()
