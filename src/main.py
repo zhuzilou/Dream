@@ -176,6 +176,23 @@ def mark_news_processed(news_id: str, source: str, analysis: str = ""):
 def generate_id(text: str) -> str:
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
+def format_decision_support(plan):
+    """格式化交易辅助决策信息。"""
+    trigger_conditions = plan.get("trigger_conditions") or []
+    invalidation_conditions = plan.get("invalidation_conditions") or []
+    review_plan = plan.get("review_plan") or []
+
+    def format_items(items):
+        return "\n".join([f"- {item}" for item in items]) if items else "- 暂无明确条件"
+
+    return (
+        f"🧭 **决策置信度**: {plan.get('confidence', '未评估')}\n"
+        f"📦 **仓位建议**: {plan.get('position_advice', '暂无')}\n\n"
+        f"✅ **触发条件**:\n{format_items(trigger_conditions)}\n\n"
+        f"❌ **失效条件**:\n{format_items(invalidation_conditions)}\n\n"
+        f"🗓️ **复盘计划**:\n{format_items(review_plan)}"
+    )
+
 def job():
     logger.info("Starting scheduled news fetching job for Frank Gemini...")
     init_db()
@@ -262,6 +279,7 @@ def job():
                     # 从 plan 中提取推演逻辑 (稍后会在 advisor 中增强)
                     md_text += f"**【操作推演 (Scenario Architect)】**\n"
                     md_text += f"{plan.get('scenario_text', plan['reason'])}\n\n"
+                    md_text += f"**【交易辅助决策】**\n{format_decision_support(plan)}\n\n"
                     
                     md_text += f"**【风险防御】**\n{analysis.get('devils_advocate', '暂无')}"
                     

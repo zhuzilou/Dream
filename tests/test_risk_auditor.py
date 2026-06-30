@@ -6,6 +6,13 @@ import sys
 # 将 src 加入路径
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
+if 'requests' not in sys.modules:
+    sys.modules['requests'] = MagicMock()
+if 'loguru' not in sys.modules:
+    mock_loguru = MagicMock()
+    mock_loguru.logger = MagicMock()
+    sys.modules['loguru'] = mock_loguru
+
 from analyst.risk_auditor import RiskAuditor
 
 class TestRiskAuditor(unittest.TestCase):
@@ -52,6 +59,13 @@ class TestRiskAuditor(unittest.TestCase):
             self.auditor.api_key = ""
             result = self.auditor.audit("test content")
             self.assertEqual(result, "API Key 未配置，无法执行审计。")
+
+    def test_prompt_treats_market_changes_as_time_drift_not_provider_error(self):
+        prompt = self.auditor.system_prompt
+
+        self.assertIn("时效偏差", prompt)
+        self.assertIn("不得归咎于数据提供者", prompt)
+        self.assertIn("辅助决策", prompt)
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ import os
 import json
 import re
 import sqlite3
+from datetime import datetime
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.ws import Client as WSClient
@@ -165,6 +166,23 @@ class FeishuListener:
 
     # --- 核心业务逻辑 ---
 
+    def _format_decision_support(self, plan):
+        """格式化交易辅助决策信息。"""
+        trigger_conditions = plan.get("trigger_conditions") or []
+        invalidation_conditions = plan.get("invalidation_conditions") or []
+        review_plan = plan.get("review_plan") or []
+
+        def format_items(items):
+            return "\n".join([f"- {item}" for item in items]) if items else "- 暂无明确条件"
+
+        return (
+            f"🧭 **决策置信度**: {plan.get('confidence', '未评估')}\n"
+            f"📦 **仓位建议**: {plan.get('position_advice', '暂无')}\n\n"
+            f"✅ **触发条件**:\n{format_items(trigger_conditions)}\n\n"
+            f"❌ **失效条件**:\n{format_items(invalidation_conditions)}\n\n"
+            f"🗓️ **复盘计划**:\n{format_items(review_plan)}"
+        )
+
     def send_help(self, chat_id):
         help_md = (
             "我是 **Frank Gemini** 🤖，您的 A 股 AI 投资助理。\n\n"
@@ -226,16 +244,23 @@ class FeishuListener:
         # 2. 获取增强版实时行情数据作为审计参考
         market_context = ""
         if found_stocks:
-            ctx_lines = ["\n[当前市场实时数据参考]:"]
+            analysis_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ctx_lines = [
+                "\n[Frank 分析时点行情参考]:",
+                f"- 分析时间: {analysis_time}",
+                "- 说明: 以下行情仅代表 Frank 当前分析时点。若与原消息存在差异，优先判断为市场快速变化造成的时效偏差，不得归咎于数据提供者。"
+            ]
             for s in found_stocks:
                 audit_data = get_stock_audit_data(s['symbol'])
                 if audit_data["price"] > 0:
+                    freshness_note = "延时/降级数据，仅作辅助参考" if audit_data.get("is_fallback") else "实时行情参考"
                     ctx_lines.append(
                         f"- {s['name']} ({s['symbol']}): "
                         f"现价 {audit_data['price']} 元, "
                         f"今日涨跌幅 {audit_data['change_pct']}%, "
                         f"换手率 {audit_data['turnover']}%, "
-                        f"5日累计涨跌幅 {audit_data['five_day_change']}%"
+                        f"5日累计涨跌幅 {audit_data['five_day_change']}%, "
+                        f"数据状态: {freshness_note}"
                     )
             market_context = "\n".join(ctx_lines)
 
@@ -442,10 +467,12 @@ class FeishuListener:
             plan = self.advisor.generate_plan(symbol, price_res, hist_df, ai_analysis, current_pos=current_pos)
             
             if plan:
+                decision_support = self._format_decision_support(plan)
                 reports.append(
                     f"### 📌 {name or symbol} ({qty}股)\n"
                     f"- **建议**: **{plan['action']}**\n"
                     f"- **理由**: {plan['reason']}\n"
+                    f"{decision_support}\n"
                 )
         
         full_md = "\n".join(reports)
@@ -490,6 +517,7 @@ class FeishuListener:
             action = plan['action']
             emoji = "🎯" if "买入" in action else ("🛡️" if "减仓" in action else "💤")
             msg_title = f"{emoji} | {name or symbol} 综合建议"
+            decision_support = self._format_decision_support(plan)
             
             warning = " (⚠️ 延时数据)" if price_res.get("is_fallback") else ""
             md = (
@@ -499,6 +527,7 @@ class FeishuListener:
                 f"✅ **建议操作**: **{action}**\n"
                 f"📊 **参考位**: 买入 {plan['buy_price'] or '--'} | 止损 {plan['stop_loss'] or '--'} | 止盈 {plan['take_profit'] or '--'}\n\n"
                 f"📝 **逻辑分析**:\n{plan['reason']}"
+                f"\n\n{decision_support}"
             )
             self.notifier.send_interactive_message(chat_id, msg_title, md, receive_id_type="chat_id")
         else:

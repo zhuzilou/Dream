@@ -58,8 +58,20 @@ def generate_markdown_report(news_data: list[dict], report_dir: str = None):
                 if plan:
                     f.write(f"#### 🎯 策略建议\n")
                     f.write(f"- **操作建议**: {plan.get('action', '观察')}\n")
+                    f.write(f"- **决策置信度**: {plan.get('confidence', '未评估')}\n")
+                    f.write(f"- **仓位建议**: {plan.get('position_advice', '暂无')}\n")
                     f.write(f"- **参考价格**: 买入 {plan.get('buy_price', '--')} | 止损 {plan.get('stop_loss', '--')} | 止盈 {plan.get('take_profit', '--')}\n")
                     f.write(f"- **推荐理由**: {plan.get('reason', '无')}\n\n")
+                    f.write(f"**触发条件:**\n")
+                    for condition in plan.get('trigger_conditions', []) or ["暂无明确条件"]:
+                        f.write(f"- {condition}\n")
+                    f.write(f"\n**失效条件:**\n")
+                    for condition in plan.get('invalidation_conditions', []) or ["暂无明确条件"]:
+                        f.write(f"- {condition}\n")
+                    f.write(f"\n**复盘计划:**\n")
+                    for item in plan.get('review_plan', []) or ["暂无复盘计划"]:
+                        f.write(f"- {item}\n")
+                    f.write("\n")
 
                 f.write(f"{item.get('content', '')}\n\n")
                 f.write("---\n\n")
