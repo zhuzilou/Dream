@@ -75,6 +75,7 @@ class FeishuListener:
             parent_id = msg.parent_id or msg.root_id
             audited_content = ""
             is_audit_command = any(k in clean_text for k in ["审核", "看看", "分析", "评价"])
+            is_recommendation_request = any(k in clean_text for k in ["推荐", "选股", "买什么", "买哪", "哪支", "哪只"])
             
             if parent_id and (is_audit_command or not clean_text):
                 logger.info(f"Audit mode triggered for parent message: {parent_id}")
@@ -139,22 +140,29 @@ class FeishuListener:
                 self.handle_audit(chat_id, audited_content)
                 return
 
-            # G. 股票分析 (即时请求)
-            elif re.search(r'\d{6}', clean_text) or (is_audit_command and clean_text):
-                query = re.sub(r'分析|看看|研报|评价', '', clean_text).strip()
-                if query:
-                    res = resolve_stock_symbol(query)
-                    if res:
-                        self.process_instant_analysis(chat_id, res['symbol'], res['name'])
-                        return
-                
-                # 如果没解析出来且有 6 位代码，按代码试
-                match = re.search(r'\d{6}', clean_text)
-                if match:
-                    self.process_instant_analysis(chat_id, match.group())
-                    return
+            # H. 选股推荐请求
+            elif is_recommendation_request:
+                stock_res = self._resolve_stock_from_text(clean_text)
+                if stock_res:
+                    self.process_instant_analysis(chat_id, stock_res['symbol'], stock_res['name'])
+                else:
+                    self.handle_stock_recommendation(chat_id)
+                return
 
-            # H. 基础交互
+            # I. 股票分析 (即时请求)
+            elif re.search(r'\d{6}', clean_text) or (is_audit_command and clean_text):
+                res = self._resolve_stock_from_text(clean_text)
+                if res:
+                    self.process_instant_analysis(chat_id, res['symbol'], res['name'])
+                    return
+                self.notifier.send_text_message(
+                    chat_id,
+                    "⚠️ 我没能识别出要分析的股票，请直接输入股票名称或代码。示例：分析 上海电力 / 分析 600021",
+                    receive_id_type="chat_id"
+                )
+                return
+
+            # J. 基础交互
             elif any(k in clean_text for k in ["你好", "谁", "助", "Hi", "Hello"]):
                 self.send_help(chat_id)
             else:
@@ -165,6 +173,33 @@ class FeishuListener:
             logger.error(f"Error handling Feishu message: {e}")
 
     # --- 核心业务逻辑 ---
+
+    def _resolve_stock_from_text(self, text):
+        """从自然语言文本中提取并解析股票。"""
+        match = re.search(r'\d{6}', text)
+        if match:
+            return resolve_stock_symbol(match.group())
+
+        query = re.sub(r'分析|看看|研报|评价|推荐|选股', '', text).strip()
+        query = re.sub(r'帮我|麻烦|请|看一下|看下|一下|下', '', query)
+        query = re.sub(r'走势|趋势|情况|是否|有没有|有|合适|适合|买入点|买点|买入|可以|能不能|现在|近期|怎么样|如何|吗|呢', '', query)
+        query = re.sub(r'[\s，,。！？?、；;：:]+', '', query)
+        if query:
+            res = resolve_stock_symbol(query)
+            if res:
+                return res
+
+        scan_text = re.sub(r'[^\u4e00-\u9fa5]', '', text)
+        stop_words = set(["分析", "看看", "走势", "情况", "是否", "合适", "适合", "买入", "推荐", "选股"])
+        for length in range(6, 1, -1):
+            for i in range(0, max(len(scan_text) - length + 1, 0)):
+                word = scan_text[i:i + length]
+                if word in stop_words:
+                    continue
+                res = resolve_stock_symbol(word)
+                if res and (res.get('name') == word or word in res.get('name', '')):
+                    return res
+        return None
 
     def _format_decision_support(self, plan):
         """格式化交易辅助决策信息。"""
@@ -182,6 +217,38 @@ class FeishuListener:
             f"❌ **失效条件**:\n{format_items(invalidation_conditions)}\n\n"
             f"🗓️ **复盘计划**:\n{format_items(review_plan)}"
         )
+
+    def handle_stock_recommendation(self, chat_id):
+        """处理没有明确股票标的的选股请求。"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT symbol, name FROM watchlist WHERE status = "active"')
+            watchlist = cursor.fetchall()
+            cursor.execute('SELECT symbol, name, quantity, entry_price FROM positions')
+            positions = cursor.fetchall()
+        finally:
+            conn.close()
+
+        candidates = []
+        for symbol, name in watchlist[:5]:
+            candidates.append(f"- 观察池：{name or symbol} ({symbol})")
+        for symbol, name, qty, price in positions[:5]:
+            candidates.append(f"- 持仓池：{name or symbol} ({symbol}) | {qty or 0}股 | 成本 {price}")
+
+        candidate_text = "\n".join(candidates) if candidates else "- 当前观察池和持仓池为空，请先用 `监控 股票名称` 建立候选池。"
+        md = (
+            "我可以帮你做选股，但第一版会优先从 **观察池** 和 **持仓池** 里筛选，"
+            "避免在没有范围和数据约束时给出拍脑袋推荐。\n\n"
+            "**当前候选范围**：\n"
+            f"{candidate_text}\n\n"
+            "**建议用法**：\n"
+            "- `分析 上海电力`：分析指定股票走势和买点\n"
+            "- `监控 上海电力`：加入观察池，后续让 Frank 持续跟踪\n"
+            "- `持仓分析`：从已有持仓里找风险和机会\n\n"
+            "后续可以继续升级为全市场选股，但需要先定义行业、风险偏好、持仓周期和最大回撤。"
+        )
+        self.notifier.send_interactive_message(chat_id, "🔎 Frank 选股助手", md, receive_id_type="chat_id")
 
     def send_help(self, chat_id):
         help_md = (
