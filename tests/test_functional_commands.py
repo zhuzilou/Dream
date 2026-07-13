@@ -185,17 +185,29 @@ class TestFunctionalCommands(unittest.TestCase):
     def test_recommendation_request_enters_board_observation(self):
         """验证推荐类请求进入场景二而不是旧荐股逻辑"""
         self.listener.handle_board_observation = MagicMock()
+        self.listener.handle_stock_recommendation = MagicMock()
 
-        mock_event = MagicMock()
-        mock_event.event.message.message_id = "msg_recommend"
-        mock_event.event.message.chat_id = "chat_123"
-        mock_event.event.message.content = json.dumps({"text": "不知道买什么，帮我推荐几支股票"})
-        mock_event.event.message.parent_id = None
-        mock_event.event.message.root_id = None
+        for index, text in enumerate([
+            "不知道买什么，帮我推荐几支股票",
+            "买哪只股票",
+            "买哪支股票",
+            "哪只股票值得看",
+            "哪支股票值得关注",
+            "帮我看看买哪只"
+        ]):
+            self.listener.handle_board_observation.reset_mock()
+            self.listener.handle_stock_recommendation.reset_mock()
+            mock_event = MagicMock()
+            mock_event.event.message.message_id = f"msg_recommend_{index}"
+            mock_event.event.message.chat_id = "chat_123"
+            mock_event.event.message.content = json.dumps({"text": text})
+            mock_event.event.message.parent_id = None
+            mock_event.event.message.root_id = None
 
-        self.listener.handle_message(mock_event)
+            self.listener.handle_message(mock_event)
 
-        self.listener.handle_board_observation.assert_called_once_with("chat_123", "不知道买什么，帮我推荐几支股票")
+            self.listener.handle_board_observation.assert_called_once_with("chat_123", text)
+            self.listener.handle_stock_recommendation.assert_not_called()
 
     @patch("listener.feishu_listener.collect_board_observation_inputs")
     def test_board_observation_empty_data_does_not_create_fake_pool(self, mock_collect):

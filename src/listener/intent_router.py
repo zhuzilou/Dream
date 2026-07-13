@@ -49,8 +49,11 @@ def route_intent(text: str) -> IntentResult:
     if compact in ["持仓分析", "分析持仓", "体检", "诊断"]:
         return IntentResult(IntentType.CHAT_FALLBACK, raw_text)
 
-    board_keywords = ["最近有哪些板块值得关注", "有什么股票值得关注", "不知道接下来该看什么", "收盘后帮我看方向",
-                      "选股", "推荐", "买什么", "最近看什么"]
+    board_keywords = [
+        "最近有哪些板块值得关注", "有什么股票值得关注", "不知道接下来该看什么", "收盘后帮我看方向",
+        "选股", "推荐", "买什么", "买哪", "哪支", "哪只", "哪支股票", "哪只股票",
+        "值得看", "值得关注", "最近看什么"
+    ]
     if any(keyword in compact for keyword in board_keywords):
         return IntentResult(IntentType.SCENARIO_BOARD_OBSERVATION, raw_text)
 

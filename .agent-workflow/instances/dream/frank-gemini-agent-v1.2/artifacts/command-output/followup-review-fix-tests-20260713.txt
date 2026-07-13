@@ -1,0 +1,64 @@
+# Follow-up Review Fix Verification - 2026-07-13
+
+Source review:
+
+- `doc/claude/frank-gemini-v1.2-followup-review-20260713.md`
+
+Fixed finding:
+
+- P2 `买哪只/哪支/值得看/值得关注` recommendation-like questions now route to Scenario 2 board observation instead of Legacy recommendation flow.
+
+RED checks observed before implementation:
+
+```text
+route_intent("买哪只股票") returned CHAT_FALLBACK
+FeishuListener did not call handle_board_observation for "买哪只股票"
+```
+
+GREEN verification:
+
+```bash
+/Users/zhuzilou/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_v12_agent_workflow.TestV12AgentWorkflow.test_intent_router_maps_v12_entrypoints tests.test_functional_commands.TestFunctionalCommands.test_recommendation_request_enters_board_observation
+```
+
+Result:
+
+```text
+Ran 2 tests in 0.012s
+OK
+```
+
+Full verification:
+
+```bash
+/Users/zhuzilou/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+```
+
+Result:
+
+```text
+Ran 29 tests in 0.091s
+OK
+```
+
+Scans:
+
+```bash
+rg -n "建议建仓|建议加仓|最佳补仓点|严禁入场|果断减仓|必买|必卖" src doc/manuals tests
+```
+
+Result:
+
+```text
+Matches only in test assertions.
+```
+
+```bash
+rg -n "每日 3 次|加减仓建议|高频风险盯盘|数据待确认方向|先生成低置信度观察记录" src tests doc/manuals
+```
+
+Result:
+
+```text
+Matches only in test assertions.
+```

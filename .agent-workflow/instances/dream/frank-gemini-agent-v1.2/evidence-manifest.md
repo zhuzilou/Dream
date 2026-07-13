@@ -45,6 +45,7 @@ Review passed after Dev rework fixed blank parent reply RiskAuditor reachability
 | QA banned phrase scan | `artifacts/command-output/qa-banned-phrases-scan.txt` | Present | No secrets |
 | Docker integration smoke | `artifacts/command-output/docker-integration-tests-20260713.txt` | Present | Secrets redacted |
 | Review fix verification | `artifacts/command-output/review-fix-tests-20260713.txt` | Present | No secrets |
+| Follow-up review fix verification | `artifacts/command-output/followup-review-fix-tests-20260713.txt` | Present | No secrets |
 | QA result | `qa-result.md` | Present | No secrets |
 
 ## Delivery Evidence
