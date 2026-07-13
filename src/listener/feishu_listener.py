@@ -186,7 +186,7 @@ class FeishuListener:
             elif re.search(r'\d{6}', clean_text) or (is_audit_command and clean_text):
                 res = self._resolve_stock_from_text(clean_text)
                 if res:
-                    self.process_instant_analysis(chat_id, res['symbol'], res['name'])
+                    self.handle_stock_decision(chat_id, res['symbol'], res['name'], clean_text)
                     return
                 self.notifier.send_text_message(
                     chat_id,
@@ -315,21 +315,18 @@ class FeishuListener:
         is_intraday = now.hour < 15
         boards = collect_board_observation_inputs(max_boards=3)
         if not boards:
-            boards = [{
-                "board_name": "数据待确认方向",
-                "change_pct": 0,
-                "net_inflow": 0,
-                "turnover": 0,
-                "sustainability": 0,
-                "beginner_friendliness": 0.5,
-                "stocks": []
-            }]
-        result = service.build_observation(
-            market_summary="当前板块数据源不足，先生成低置信度观察记录；请在收盘后重新生成正式观察池。",
-            boards=boards,
-            data_timestamp=now,
-            is_intraday=is_intraday
-        )
+            result = service.build_unavailable(
+                reason="AkShare 板块数据源暂不可用或返回空结果。",
+                data_timestamp=now,
+                is_intraday=is_intraday
+            )
+        else:
+            result = service.build_observation(
+                market_summary="当前市场方向以板块资金、涨跌幅、成交活跃度和可持续性综合判断。",
+                boards=boards,
+                data_timestamp=now,
+                is_intraday=is_intraday
+            )
         self.notifier.send_interactive_message(chat_id, result.card.title, render_markdown(result.card), receive_id_type="chat_id")
 
     def handle_term_learning(self, chat_id, raw_text):
@@ -358,6 +355,12 @@ class FeishuListener:
     def handle_observation_memory(self, chat_id, raw_text):
         memory = ObservationMemory(DB_PATH)
         memory.init_schema()
+        compact = re.sub(r"\s+", "", raw_text or "")
+        match = re.match(r"复盘观察池(\d+)$", compact)
+        if match:
+            self.handle_observation_review(chat_id, memory, int(match.group(1)))
+            return
+
         runs = memory.list_recent_runs()
         if not runs:
             md = "暂无 Observation Memory。你可以先问：`最近有哪些板块值得关注？`"
@@ -368,27 +371,114 @@ class FeishuListener:
             md = "\n".join(lines)
         self.notifier.send_interactive_message(chat_id, "Frank Observation Memory", md, receive_id_type="chat_id")
 
+    def handle_observation_review(self, chat_id, memory, run_id):
+        run = memory.get_run(run_id)
+        if not run:
+            self.notifier.send_interactive_message(chat_id, "Frank Observation Review", f"未找到观察池 #{run_id}。", receive_id_type="chat_id")
+            return
+
+        stocks = memory.list_stocks(run_id)
+        if not stocks:
+            md = (
+                f"观察池 #{run_id} 没有可复盘候选股。\n\n"
+                "复盘用于学习，不证明当初推荐一定正确；如果当时数据源失败，应该重新生成观察池。"
+            )
+            self.notifier.send_interactive_message(chat_id, "Frank Observation Review", md, receive_id_type="chat_id")
+            return
+
+        lines = [
+            f"观察池 #{run_id} 复盘",
+            "",
+            "复盘用于学习，不证明当初推荐一定正确。",
+            "重点看条件是否成立、哪些条件失效，以及下一次观察应更谨慎的地方。",
+            ""
+        ]
+        for stock in stocks:
+            hist_df = get_stock_hist(stock["symbol"])
+            rows = self._hist_rows(hist_df)
+            condition_results = self._review_condition_results(rows)
+            price_snapshot = self._review_price_snapshot(rows)
+            conclusion = self._review_conclusion(condition_results)
+            lesson = "下一次仍要先进入场景一确认触发条件和失效条件，不能把观察池当买入名单。"
+            memory.add_review(
+                stock["id"], datetime.now().strftime("%Y-%m-%d"),
+                price_snapshot, condition_results, conclusion, lesson
+            )
+            lines.extend([
+                f"- {stock['name']}({stock['symbol']})",
+                f"  - 条件是否成立：{condition_results['summary']}",
+                f"  - 复盘结论：{conclusion}",
+                f"  - 学习要点：{lesson}"
+            ])
+
+        self.notifier.send_interactive_message(chat_id, "Frank Observation Review", "\n".join(lines), receive_id_type="chat_id")
+
+    def _hist_rows(self, hist_df):
+        if hist_df is None:
+            return []
+        if isinstance(hist_df, list):
+            return hist_df
+        if hasattr(hist_df, "to_dict"):
+            try:
+                return hist_df.to_dict("records")
+            except TypeError:
+                return []
+        return []
+
+    def _review_condition_results(self, rows):
+        if not rows:
+            return {
+                "summary": "行情数据不足，无法判断观察条件是否成立。",
+                "has_follow_through": False,
+                "volume_improved": False
+            }
+        closes = [float(row.get("close", row.get("收盘", 0)) or 0) for row in rows]
+        volumes = [float(row.get("volume", row.get("成交量", 0)) or 0) for row in rows]
+        first_close = closes[0] if closes else 0
+        last_close = closes[-1] if closes else 0
+        has_follow_through = last_close >= first_close
+        volume_improved = len(volumes) >= 2 and volumes[-1] >= volumes[0]
+        summary = "价格没有跌回观察起点" if has_follow_through else "价格跌回观察起点下方"
+        summary += "，成交量有配合。" if volume_improved else "，成交量配合不足。"
+        return {
+            "summary": summary,
+            "has_follow_through": has_follow_through,
+            "volume_improved": volume_improved
+        }
+
+    def _review_price_snapshot(self, rows):
+        if not rows:
+            return {"data_available": False}
+        first = rows[0]
+        last = rows[-1]
+        return {
+            "data_available": True,
+            "start_close": first.get("close", first.get("收盘")),
+            "latest_close": last.get("close", last.get("收盘")),
+            "latest_date": last.get("date", last.get("日期"))
+        }
+
+    def _review_conclusion(self, condition_results):
+        if not condition_results.get("has_follow_through"):
+            return "暂未看到观察条件成立，更适合继续等待确认。"
+        if condition_results.get("volume_improved"):
+            return "观察条件部分成立，但仍需进入场景一确认具体触发条件。"
+        return "价格表现有所修复，但成交量不足，仍不适合直接视为买点。"
+
     def send_help(self, chat_id):
         help_md = (
-            "我是 **Frank Gemini** 🤖，您的 A 股 AI 投资助理。\n\n"
-            "🎯 **核心指令**：\n"
-            "--- \n"
-            "1️⃣ **监控 [名称/代码]**\n"
-            "> 加入观察池，开启每日 3 次的定时资讯抓取与 AI 情绪分析。\n"
-            "> *示例：监控 纳百川*\n\n"
-            "2️⃣ **买入 [名称/代码] [价格] [数量]**\n"
-            "> 录入/加仓。Frank 将计算摊薄成本并开启高频风险盯盘。\n"
-            "> *示例：买入 301667 105.2 500*\n\n"
-            "3️⃣ **卖出 [名称/代码] [数量/全部]**\n"
-            "> 减仓或清仓，并记录交易日记。\n"
-            "> *示例：卖出 301667 200*\n\n"
-            "4️⃣ **分析 [名称/代码]**\n"
-            "> 即时进行“技术+情绪+风险+仓位”深度建模。\n\n"
-            "5️⃣ **持仓分析**\n"
-            "> 对当前所有持仓进行一次整体“体检”，给出加减仓建议。\n\n"
-            "6️⃣ **池子**\n"
-            "> 查看当前的【观察池】和【持仓池】清单。\n\n"
-            "💡 **V1.2 玩法**：想看方向可问“最近有哪些板块值得关注”；想看个股可问“上海电力现在能不能买”。"
+            "我是 **Frank Gemini**，你的 A 股投研陪练，不替你做买卖决定。\n\n"
+            "🎯 **V1.2 主入口**：\n"
+            "1. **个股能不能买**：`上海电力最近一直跌，可以买吗？`\n"
+            "2. **板块观察池**：`最近有哪些板块值得关注？` / `收盘后帮我看方向`\n"
+            "3. **查看观察池**：`查看观察池` / `最近观察池`\n"
+            "4. **复盘观察池**：`复盘观察池 1`\n"
+            "5. **记录术语**：`记录术语 放量修复 场景7.1` / `导出术语记录`\n\n"
+            "🧭 **历史功能，暂保留**：\n"
+            "- `监控 [名称/代码]`：手动 watchlist。\n"
+            "- `买入/卖出 [名称/代码] ...`：持仓记录。\n"
+            "- `池子` / `持仓分析`：查看历史 watchlist 与 positions。\n\n"
+            "所有输出只做条件观察和风险提示，最终决策由你完成。"
         )
         self.notifier.send_interactive_message(chat_id, "📖 Frank Gemini 使用指南", help_md, receive_id_type="chat_id")
 

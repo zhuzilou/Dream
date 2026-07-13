@@ -46,6 +46,9 @@ class TestV12AgentWorkflow(unittest.TestCase):
 
     def test_intent_router_maps_v12_entrypoints(self):
         self.assertEqual(route_intent("上海电力最近一直在跌，可以买入吗？").intent_type, IntentType.SCENARIO_STOCK_DECISION)
+        self.assertEqual(route_intent("上海电力最近一直跌，可以买吗").intent_type, IntentType.SCENARIO_STOCK_DECISION)
+        self.assertEqual(route_intent("分析 上海电力").intent_type, IntentType.SCENARIO_STOCK_DECISION)
+        self.assertEqual(route_intent("分析下上海电力的走势情况，是否有合适的买入点").intent_type, IntentType.SCENARIO_STOCK_DECISION)
         self.assertEqual(route_intent("不知道买什么，帮我推荐几支股票").intent_type, IntentType.SCENARIO_BOARD_OBSERVATION)
         self.assertEqual(route_intent("记录术语 放量修复 场景7.1").intent_type, IntentType.TERM_LEARNING)
         self.assertEqual(route_intent("复盘观察池 1").intent_type, IntentType.OBSERVATION_REVIEW)
@@ -138,6 +141,37 @@ class TestV12AgentWorkflow(unittest.TestCase):
             self.assertEqual(run["status"], "intraday")
             self.assertLessEqual(len(stocks), 2)
             self.assertTrue(all(stock["symbol"] != "600999" for stock in stocks))
+        finally:
+            os.remove(db_path)
+
+    def test_board_observation_data_unavailable_does_not_create_fake_board(self):
+        db_fd, db_path = tempfile.mkstemp()
+        os.close(db_fd)
+        try:
+            memory = ObservationMemory(db_path)
+            memory.init_schema()
+            service = BoardObservationService(memory=memory)
+
+            result = service.build_unavailable(
+                reason="AkShare 板块接口暂不可用",
+                data_timestamp=datetime(2026, 7, 13, 16, 0),
+                is_intraday=False
+            )
+
+            md = render_markdown(result.card)
+            run = memory.get_run(result.run_id)
+
+            conn = sqlite3.connect(db_path)
+            board_count = conn.execute("SELECT COUNT(*) FROM observation_boards").fetchone()[0]
+            stock_count = conn.execute("SELECT COUNT(*) FROM observation_stocks").fetchone()[0]
+            conn.close()
+
+            self.assertEqual(run["status"], "failed")
+            self.assertEqual(board_count, 0)
+            self.assertEqual(stock_count, 0)
+            self.assertIn("板块数据暂不可用", md)
+            self.assertIn("未生成观察池", md)
+            self.assertNotIn("数据待确认方向", md)
         finally:
             os.remove(db_path)
 

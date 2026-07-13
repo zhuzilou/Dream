@@ -22,6 +22,7 @@ Frank Gemini Agent V1.2 minimum closed loop has been implemented and verified:
 ## Verification
 
 - Full self-check: `Ran 24 tests in 0.110s ... OK`
+- Review-fix self-check: `Ran 29 tests in 0.166s ... OK`
 - Docker self-check: `Ran 24 tests in 0.555s ... OK`
 - Docker V1.2 focused tests: `Ran 9 tests in 0.033s ... OK`
 - Docker entrypoint smoke: `TOTAL_CARDS 5`, `ASSERTS True True True True`
@@ -47,4 +48,5 @@ Frank Gemini Agent V1.2 minimum closed loop has been implemented and verified:
 - `.agent-workflow/instances/dream/frank-gemini-agent-v1.2/artifacts/command-output/qa-tests.txt`
 - `.agent-workflow/instances/dream/frank-gemini-agent-v1.2/artifacts/command-output/qa-banned-phrases-scan.txt`
 - `.agent-workflow/instances/dream/frank-gemini-agent-v1.2/artifacts/command-output/docker-integration-tests-20260713.txt`
+- `.agent-workflow/instances/dream/frank-gemini-agent-v1.2/artifacts/command-output/review-fix-tests-20260713.txt`
 - `.agent-workflow/instances/dream/frank-gemini-agent-v1.2/transition-gate-checklist.md`

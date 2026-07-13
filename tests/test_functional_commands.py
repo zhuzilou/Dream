@@ -6,6 +6,7 @@ import json
 import tempfile
 import shutil
 import types
+import importlib.util
 from unittest.mock import MagicMock, patch
 
 # Ensure src is in path
@@ -17,15 +18,15 @@ if src_path not in sys.path:
 sys.modules['schedule'] = MagicMock()
 if 'akshare' not in sys.modules:
     sys.modules['akshare'] = MagicMock()
-if 'pandas' not in sys.modules:
+if 'pandas' not in sys.modules and importlib.util.find_spec('pandas') is None:
     mock_pandas = MagicMock()
     mock_pandas.DataFrame = MagicMock
     sys.modules['pandas'] = mock_pandas
-if 'numpy' not in sys.modules:
+if 'numpy' not in sys.modules and importlib.util.find_spec('numpy') is None:
     sys.modules['numpy'] = MagicMock()
-if 'requests' not in sys.modules:
+if 'requests' not in sys.modules and importlib.util.find_spec('requests') is None:
     sys.modules['requests'] = MagicMock()
-if 'loguru' not in sys.modules:
+if 'loguru' not in sys.modules and importlib.util.find_spec('loguru') is None:
     mock_loguru = MagicMock()
     mock_loguru.logger = MagicMock()
     sys.modules['loguru'] = mock_loguru
@@ -49,6 +50,7 @@ if 'lark_oapi' not in sys.modules:
 
 import main
 import listener.feishu_listener as feishu_listener
+from memory.observation_memory import ObservationMemory
 
 class TestFunctionalCommands(unittest.TestCase):
     def setUp(self):
@@ -153,6 +155,33 @@ class TestFunctionalCommands(unittest.TestCase):
             "分析下上海电力的走势情况，是否有合适的买入点"
         )
 
+    @patch("listener.feishu_listener.resolve_stock_symbol")
+    def test_common_stock_questions_enter_v12_decision_flow(self, mock_resolve):
+        """验证常见个股问法不会落回旧即时分析流程"""
+        def fake_resolve(query):
+            if query == "上海电力":
+                return {'symbol': '600021', 'name': '上海电力'}
+            return None
+
+        mock_resolve.side_effect = fake_resolve
+        self.listener.handle_stock_decision = MagicMock()
+        self.listener.process_instant_analysis = MagicMock()
+
+        for index, text in enumerate(["上海电力最近一直跌，可以买吗", "分析 上海电力", "评价 上海电力"]):
+            self.listener.handle_stock_decision.reset_mock()
+            self.listener.process_instant_analysis.reset_mock()
+            mock_event = MagicMock()
+            mock_event.event.message.message_id = f"msg_stock_question_{index}"
+            mock_event.event.message.chat_id = "chat_123"
+            mock_event.event.message.content = json.dumps({"text": text})
+            mock_event.event.message.parent_id = None
+            mock_event.event.message.root_id = None
+
+            self.listener.handle_message(mock_event)
+
+            self.listener.handle_stock_decision.assert_called_once_with("chat_123", "600021", "上海电力", text)
+            self.listener.process_instant_analysis.assert_not_called()
+
     def test_recommendation_request_enters_board_observation(self):
         """验证推荐类请求进入场景二而不是旧荐股逻辑"""
         self.listener.handle_board_observation = MagicMock()
@@ -167,6 +196,71 @@ class TestFunctionalCommands(unittest.TestCase):
         self.listener.handle_message(mock_event)
 
         self.listener.handle_board_observation.assert_called_once_with("chat_123", "不知道买什么，帮我推荐几支股票")
+
+    @patch("listener.feishu_listener.collect_board_observation_inputs")
+    def test_board_observation_empty_data_does_not_create_fake_pool(self, mock_collect):
+        """验证板块数据为空时不写入假的观察方向"""
+        mock_collect.return_value = []
+
+        self.listener.handle_board_observation("chat_123", "最近有哪些板块值得关注")
+
+        md = self.listener.notifier.send_interactive_message.call_args[0][2]
+        self.assertIn("板块数据暂不可用", md)
+        self.assertIn("未生成观察池", md)
+        self.assertNotIn("数据待确认方向", md)
+
+        conn = sqlite3.connect(self.db_path)
+        run_status = conn.execute("SELECT status FROM observation_runs ORDER BY id DESC LIMIT 1").fetchone()[0]
+        board_count = conn.execute("SELECT COUNT(*) FROM observation_boards").fetchone()[0]
+        stock_count = conn.execute("SELECT COUNT(*) FROM observation_stocks").fetchone()[0]
+        conn.close()
+
+        self.assertEqual(run_status, "failed")
+        self.assertEqual(board_count, 0)
+        self.assertEqual(stock_count, 0)
+
+    @patch("listener.feishu_listener.get_stock_hist")
+    def test_observation_review_writes_review_record(self, mock_hist):
+        """验证复盘观察池会写入 observation_reviews，而不是只列出观察池"""
+        mock_hist.return_value = [
+            {"date": "2026-07-14", "close": 10.1, "high": 10.3, "low": 9.8, "volume": 100000},
+            {"date": "2026-07-15", "close": 10.4, "high": 10.6, "low": 10.0, "volume": 130000}
+        ]
+        memory = ObservationMemory(self.db_path)
+        memory.init_schema()
+        run_id = memory.create_run("2026-07-13", "测试市场环境", "2026-07-13 15:30:00", "after_close")
+        board_id = memory.add_board(run_id, "电力", "B", "资金活跃", "需逐只确认")
+        memory.add_stock(
+            run_id, board_id, "600021", "上海电力", "电力板块候选",
+            ["观察能否站稳关键均线", "反弹需要放量修复"],
+            ["有效跌破关键低点"]
+        )
+
+        self.listener.handle_observation_memory("chat_123", f"复盘观察池 {run_id}")
+
+        md = self.listener.notifier.send_interactive_message.call_args[0][2]
+        conn = sqlite3.connect(self.db_path)
+        review_count = conn.execute("SELECT COUNT(*) FROM observation_reviews").fetchone()[0]
+        conn.close()
+
+        self.assertEqual(review_count, 1)
+        self.assertIn("复盘用于学习", md)
+        self.assertIn("条件是否成立", md)
+        self.assertIn("上海电力(600021)", md)
+
+    def test_help_uses_v12_product_language(self):
+        """验证帮助文案不再宣传旧版定时资讯推送和加减仓建议"""
+        self.listener.send_help("chat_123")
+
+        md = self.listener.notifier.send_interactive_message.call_args[0][2]
+
+        self.assertIn("个股能不能买", md)
+        self.assertIn("板块观察池", md)
+        self.assertIn("复盘观察池", md)
+        self.assertIn("记录术语", md)
+        self.assertNotIn("每日 3 次", md)
+        self.assertNotIn("加减仓建议", md)
+        self.assertNotIn("高频风险盯盘", md)
 
     def test_audit_command_is_deprecated_main_flow(self):
         """验证审核不再进入 RiskAuditor 主流程"""

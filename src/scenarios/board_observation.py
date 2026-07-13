@@ -65,6 +65,24 @@ class BoardObservationService:
         )
         return BoardObservationResult(card=card, run_id=run_id, boards=saved_boards)
 
+    def build_unavailable(self, reason, data_timestamp, is_intraday=False):
+        timestamp_text = data_timestamp.strftime("%Y-%m-%d %H:%M:%S") if hasattr(data_timestamp, "strftime") else str(data_timestamp)
+        trade_date = timestamp_text[:10]
+        run_id = self.memory.create_run(trade_date, reason, timestamp_text, "failed")
+        version = "盘中临时请求" if is_intraday else "收盘后请求"
+        card = StructuredCard(
+            title="板块数据暂不可用",
+            conclusion="板块数据暂不可用，本次未生成观察池，也不会给出买入名单。",
+            metadata={"data_timestamp": timestamp_text},
+            sections=[
+                CardSection("任务边界", ["未生成观察池；没有可靠板块数据时不写入候选方向，不用空壳记录冒充筛选结果。"]),
+                CardSection("失败原因", [reason]),
+                CardSection("当前状态", [f"本次为{version}，仅记录一次失败运行状态，供排查数据源稳定性。"]),
+                CardSection("下一步动作", ["建议稍后重试，或在收盘后重新生成正式观察池。"])
+            ]
+        )
+        return BoardObservationResult(card=card, run_id=run_id, boards=[])
+
     def _score_board(self, board):
         net_inflow = float(board.get("net_inflow", 0) or 0)
         change_pct = float(board.get("change_pct", 0) or 0)

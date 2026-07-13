@@ -1,0 +1,59 @@
+# Review Fix Verification - 2026-07-13
+
+Source review:
+
+- `doc/claude/frank-gemini-v1.2-code-review-20260713.md`
+
+Fixed findings:
+
+- P1 common stock questions now enter Scenario 1.
+- P1 `复盘观察池 {id}` writes `observation_reviews` and produces a learning review.
+- P1 empty board data no longer creates fake board `数据待确认方向`; it records a failed run and returns unavailable-data guidance.
+- P2 Feishu help text now uses V1.2 product language.
+- P2 `评价/看看 + 股票名` no longer falls through to old instant analysis; it enters Scenario 1.
+
+Commands:
+
+```bash
+/Users/zhuzilou/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m unittest tests.test_functional_commands tests.test_v12_agent_workflow tests.test_strategist
+```
+
+Result:
+
+```text
+Ran 23 tests in 0.217s
+OK
+```
+
+```bash
+/Users/zhuzilou/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+```
+
+Result:
+
+```text
+Ran 29 tests in 0.166s
+OK
+```
+
+Scans:
+
+```bash
+rg -n "建议建仓|建议加仓|最佳补仓点|严禁入场|果断减仓|必买|必卖" src doc/manuals tests
+```
+
+Result:
+
+```text
+Matches only in test assertions.
+```
+
+```bash
+rg -n "每日 3 次|加减仓建议|高频风险盯盘|数据待确认方向|先生成低置信度观察记录" src tests doc/manuals
+```
+
+Result:
+
+```text
+Matches only in test assertions.
+```

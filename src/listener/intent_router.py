@@ -46,13 +46,22 @@ def route_intent(text: str) -> IntentResult:
     if compact.startswith("买入") or compact.startswith("卖出") or compact.startswith("移除") or compact.startswith("删"):
         return IntentResult(IntentType.LEGACY_POSITION, raw_text, argument=raw_text)
 
+    if compact in ["持仓分析", "分析持仓", "体检", "诊断"]:
+        return IntentResult(IntentType.CHAT_FALLBACK, raw_text)
+
     board_keywords = ["最近有哪些板块值得关注", "有什么股票值得关注", "不知道接下来该看什么", "收盘后帮我看方向",
                       "选股", "推荐", "买什么", "最近看什么"]
     if any(keyword in compact for keyword in board_keywords):
         return IntentResult(IntentType.SCENARIO_BOARD_OBSERVATION, raw_text)
 
-    stock_keywords = ["股票能买吗", "能买吗", "能不能买", "可以买入吗", "可以抄底吗", "买点", "走势"]
-    if re.search(r"\d{6}", compact) or any(keyword in compact for keyword in stock_keywords):
+    stock_keywords = [
+        "股票能买吗", "能买吗", "能不能买", "可以买入吗", "可以买入", "可以买吗", "可以买吗",
+        "能买了吗", "可以抄底吗", "最近一直跌", "一直跌", "买点", "走势"
+    ]
+    is_analysis_request = (
+        compact.startswith("分析") or compact.startswith("评价") or compact.startswith("看看")
+    ) and compact not in ["分析持仓"]
+    if re.search(r"\d{6}", compact) or is_analysis_request or any(keyword in compact for keyword in stock_keywords):
         return IntentResult(IntentType.SCENARIO_STOCK_DECISION, raw_text, stock_query=raw_text)
 
     return IntentResult(IntentType.CHAT_FALLBACK, raw_text)
