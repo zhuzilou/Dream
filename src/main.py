@@ -111,6 +111,65 @@ def init_db():
             timestamp DATETIME DEFAULT (datetime('now', 'localtime'))
         )
     ''')
+
+    # V1.2 Observation Memory
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date TEXT,
+            market_summary TEXT,
+            data_timestamp TEXT,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            status TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observation_boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            board_name TEXT,
+            board_level TEXT,
+            reason TEXT,
+            risk_note TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observation_stocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER,
+            board_id INTEGER,
+            symbol TEXT,
+            name TEXT,
+            reason TEXT,
+            observe_conditions TEXT,
+            invalidation_conditions TEXT,
+            status TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observation_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_id INTEGER,
+            review_date TEXT,
+            price_snapshot TEXT,
+            condition_results TEXT,
+            conclusion TEXT,
+            lesson TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS term_learning_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            term TEXT,
+            raw_message TEXT,
+            frank_answer TEXT,
+            user_feedback TEXT,
+            related_scene TEXT,
+            status TEXT,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            resolved_at TEXT
+        )
+    ''')
     
     # 数据库迁移逻辑：检查并添加 missing columns
     # 检查 watchlist 表
@@ -287,10 +346,23 @@ def job():
     else:
         logger.info("Job completed. No new news.")
 
+def configure_scheduler():
+    """配置定时任务。
+
+    V1.2 将定时新闻直接推送标记为 deprecated，默认不再注册旧新闻推送任务。
+    如需临时恢复旧能力，必须由运维显式设置环境变量。
+    """
+    if os.getenv("FRANK_ENABLE_LEGACY_NEWS_PUSH", "").lower() == "true":
+        schedule.every().day.at("08:30").do(job)
+        schedule.every().day.at("12:30").do(job)
+        schedule.every().day.at("18:30").do(job)
+        logger.warning("Legacy scheduled news push is enabled by environment override.")
+    else:
+        logger.info("Legacy scheduled news push is disabled for Frank Gemini V1.2.")
+
+
 def run_scheduler():
-    schedule.every().day.at("08:30").do(job)
-    schedule.every().day.at("12:30").do(job)
-    schedule.every().day.at("18:30").do(job)
+    configure_scheduler()
     while True:
         schedule.run_pending()
         time.sleep(60)

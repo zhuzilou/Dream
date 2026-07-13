@@ -1,0 +1,137 @@
+# Docker Integration Tests - 2026-07-13
+
+## Container Startup
+
+Command:
+
+```bash
+docker compose up -d
+```
+
+Result:
+
+```text
+Container dream_frank_gemini Started
+```
+
+Runtime check:
+
+```bash
+docker ps
+```
+
+Result:
+
+```text
+dream-frank:v1.1.1 Up
+pgvector/pgvector:pg16 Up healthy
+```
+
+## Runtime Logs
+
+Command:
+
+```bash
+docker compose logs --tail 80 scout
+```
+
+Key observations:
+
+- Frank Gemini started.
+- Database migration completed.
+- Legacy scheduled news push disabled for V1.2.
+- Feishu WebSocket listener started.
+- Feishu WebSocket connected.
+
+Sensitive tokens and URLs are not copied into this artifact.
+
+## Container Test Suite
+
+Command:
+
+```bash
+docker compose exec -T scout python tests/run_tests.py
+```
+
+Result:
+
+```text
+Ran 24 tests in 0.555s
+OK
+```
+
+Coverage:
+
+- V1.2 intent routing.
+- Scenario 1 stock decision.
+- Scenario 2 board observation.
+- Observation Memory.
+- Term Learning Queue.
+- Deprecated audit behavior.
+- Legacy scheduled news push disabled by default.
+
+## Container V1.2 Focused Tests
+
+Command:
+
+```bash
+docker compose exec -T scout python -m unittest tests.test_v12_agent_workflow tests.test_strategist
+```
+
+Result:
+
+```text
+Ran 9 tests in 0.033s
+OK
+```
+
+## Live AkShare Smoke
+
+Command:
+
+```bash
+docker compose exec -T scout python -c "... direct AkShare adapter smoke ..."
+```
+
+Result:
+
+```text
+resolve {'symbol': '600021', 'name': '上海电力'}
+price_ok {'price': 13.46, 'source': 'realtime_sina', 'is_fallback': False}
+hist_rows 41
+boards_len 0
+```
+
+Interpretation:
+
+- Individual-stock resolution, realtime price, and historical K line worked in container.
+- Board observation adapter hit an upstream AkShare/remote endpoint failure: `RemoteDisconnected`.
+- The application degraded safely by returning an empty board input list.
+
+## V1.2 Entrypoint Smoke With Feishu Sending Intercepted
+
+Command:
+
+```bash
+docker compose exec -T scout python -c "... instantiate FeishuListener, replace send methods, call V1.2 handlers ..."
+```
+
+Validated:
+
+- Deprecated audit card generated.
+- Scenario 1 stock decision card generated with trigger and invalidation conditions.
+- Scenario 2 board observation card generated via low-confidence fallback.
+- Term Learning Queue recorded `放量修复`.
+- Observation Memory listed the generated observation run.
+
+Result:
+
+```text
+TOTAL_CARDS 5
+ASSERTS True True True True
+```
+
+## Residual Risk
+
+- Real Feishu outbound message delivery was not exercised because send methods were intercepted to avoid posting test cards to production chat.
+- AkShare board/sector endpoint was unavailable during this run; fallback behavior passed, but real board candidate data was not verified.

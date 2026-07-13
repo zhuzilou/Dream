@@ -7,11 +7,17 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.ws import Client as WSClient
 from loguru import logger
-from scraper.akshare_client import get_stock_news, get_stock_hist, get_stock_current_price, resolve_stock_symbol, get_stock_audit_data
+from scraper.akshare_client import get_stock_news, get_stock_hist, get_stock_current_price, resolve_stock_symbol, get_stock_audit_data, collect_board_observation_inputs
 from analyst.llm_engine import Analyst
 from analyst.risk_auditor import RiskAuditor
 from strategist.trade_advisor import TradeAdvisor
 from notifier.feishu import FeishuBot
+from generator.card_renderer import render_markdown
+from listener.intent_router import IntentType, route_intent
+from memory.observation_memory import ObservationMemory
+from memory.term_learning import TermLearningQueue
+from scenarios.board_observation import BoardObservationService
+from scenarios.stock_decision import StockDecisionService
 
 # 动态获取数据库路径 (与 main.py 保持一致)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "scout.db")
@@ -71,19 +77,51 @@ class FeishuListener:
             
             clean_text = re.sub(r'@[^\s]+\s?', '', text).strip()
             
-            # 检测是否是“回复”消息（即审核模式）
+            # V1.2 中回复审核已降级，不再读取父消息进入 RiskAuditor。
             parent_id = msg.parent_id or msg.root_id
-            audited_content = ""
             is_audit_command = any(k in clean_text for k in ["审核", "看看", "分析", "评价"])
             is_recommendation_request = any(k in clean_text for k in ["推荐", "选股", "买什么", "买哪", "哪支", "哪只"])
             
-            if parent_id and (is_audit_command or not clean_text):
-                logger.info(f"Audit mode triggered for parent message: {parent_id}")
-                audited_content = self.notifier.get_message_content(parent_id)
-            
             logger.info(f"Received message from Feishu: {clean_text}")
 
+            if parent_id and (not clean_text or clean_text in ["审核", "看看", "评价"]):
+                self.handle_deprecated_audit(chat_id)
+                return
+
             # 1. 意图分发
+            intent = route_intent(clean_text)
+
+            if intent.intent_type == IntentType.HELP:
+                self.send_help(chat_id)
+                return
+
+            if intent.intent_type == IntentType.TERM_LEARNING:
+                self.handle_term_learning(chat_id, clean_text)
+                return
+
+            if intent.intent_type == IntentType.OBSERVATION_REVIEW:
+                self.handle_observation_memory(chat_id, clean_text)
+                return
+
+            if intent.intent_type == IntentType.DEPRECATED_AUDIT:
+                self.handle_deprecated_audit(chat_id)
+                return
+
+            if intent.intent_type == IntentType.SCENARIO_BOARD_OBSERVATION:
+                self.handle_board_observation(chat_id, clean_text)
+                return
+
+            if intent.intent_type == IntentType.SCENARIO_STOCK_DECISION:
+                res = self._resolve_stock_from_text(clean_text)
+                if res:
+                    self.handle_stock_decision(chat_id, res['symbol'], res['name'], clean_text)
+                    return
+                self.notifier.send_text_message(
+                    chat_id,
+                    "⚠️ 我没能识别出要分析的股票，请直接输入股票名称或代码。示例：上海电力最近一直跌，可以买吗？ / 分析 600021",
+                    receive_id_type="chat_id"
+                )
+                return
             
             # A. 帮助指令
             if clean_text in ["帮助", "help", "帮助", "菜单", "指令"]:
@@ -135,12 +173,7 @@ class FeishuListener:
                 self.handle_portfolio_analysis(chat_id)
                 return
 
-            # G. 审核模式 (通过回复触发)
-            elif audited_content:
-                self.handle_audit(chat_id, audited_content)
-                return
-
-            # H. 选股推荐请求
+            # G. 选股推荐请求
             elif is_recommendation_request:
                 stock_res = self._resolve_stock_from_text(clean_text)
                 if stock_res:
@@ -149,7 +182,7 @@ class FeishuListener:
                     self.handle_stock_recommendation(chat_id)
                 return
 
-            # I. 股票分析 (即时请求)
+            # H. 股票分析 (即时请求)
             elif re.search(r'\d{6}', clean_text) or (is_audit_command and clean_text):
                 res = self._resolve_stock_from_text(clean_text)
                 if res:
@@ -162,7 +195,7 @@ class FeishuListener:
                 )
                 return
 
-            # J. 基础交互
+            # I. 基础交互
             elif any(k in clean_text for k in ["你好", "谁", "助", "Hi", "Hello"]):
                 self.send_help(chat_id)
             else:
@@ -250,6 +283,91 @@ class FeishuListener:
         )
         self.notifier.send_interactive_message(chat_id, "🔎 Frank 选股助手", md, receive_id_type="chat_id")
 
+    def handle_deprecated_audit(self, chat_id):
+        md = (
+            "这个“审核”入口在 V1.2 已降级，不再作为主流程。\n\n"
+            "原因是股票价格、成交量和涨跌幅变化很快，直接审判一段内容容易把时效偏差误判成错误。\n\n"
+            "你可以改成问一个具体股票或板块，例如：\n"
+            "- `上海电力最近一直跌，可以买入吗？`\n"
+            "- `最近有哪些板块值得关注？`\n\n"
+            "Frank 会按真实行情、观察条件和失效条件辅助你判断，最终决策仍由你完成。"
+        )
+        self.notifier.send_interactive_message(chat_id, "Frank 审核入口已降级", md, receive_id_type="chat_id")
+
+    def handle_stock_decision(self, chat_id, symbol, name, raw_question):
+        hist_df = get_stock_hist(symbol)
+        price_res = get_stock_current_price(symbol)
+        service = StockDecisionService()
+        result = service.build_decision(
+            raw_question=raw_question,
+            stock={"symbol": symbol, "name": name},
+            price_data=price_res,
+            hist_df=hist_df,
+            news_summary="新闻只作为辅助信息，本次主要依据行情、均线、支撑压力和成交量。"
+        )
+        self.notifier.send_interactive_message(chat_id, result.card.title, render_markdown(result.card), receive_id_type="chat_id")
+
+    def handle_board_observation(self, chat_id, raw_question):
+        memory = ObservationMemory(DB_PATH)
+        memory.init_schema()
+        service = BoardObservationService(memory=memory)
+        now = datetime.now()
+        is_intraday = now.hour < 15
+        boards = collect_board_observation_inputs(max_boards=3)
+        if not boards:
+            boards = [{
+                "board_name": "数据待确认方向",
+                "change_pct": 0,
+                "net_inflow": 0,
+                "turnover": 0,
+                "sustainability": 0,
+                "beginner_friendliness": 0.5,
+                "stocks": []
+            }]
+        result = service.build_observation(
+            market_summary="当前板块数据源不足，先生成低置信度观察记录；请在收盘后重新生成正式观察池。",
+            boards=boards,
+            data_timestamp=now,
+            is_intraday=is_intraday
+        )
+        self.notifier.send_interactive_message(chat_id, result.card.title, render_markdown(result.card), receive_id_type="chat_id")
+
+    def handle_term_learning(self, chat_id, raw_text):
+        queue = TermLearningQueue(DB_PATH)
+        queue.init_schema()
+        compact = re.sub(r"\s+", " ", raw_text).strip()
+        if compact.startswith("记录术语"):
+            parts = compact.split(" ")
+            term = parts[1] if len(parts) >= 2 else ""
+            scene = parts[2] if len(parts) >= 3 else ""
+            if not term:
+                self.notifier.send_text_message(chat_id, "⚠️ 请提供术语。示例：记录术语 放量修复 场景7.1", receive_id_type="chat_id")
+                return
+            queue.record_term(term, raw_text, related_scene=scene)
+            md = f"已记录待补充术语：**{term}**" + (f"\n\n关联场景：{scene}" if scene else "")
+        elif compact == "待补充术语":
+            rows = queue.list_pending()
+            md = "\n".join([f"- {row['term']} | {row['related_scene']} | {row['status']}" for row in rows]) or "暂无待补充术语。"
+        elif compact == "导出术语记录":
+            md = queue.export_records()
+        else:
+            rows = queue.list_recent()
+            md = "\n".join([f"- {row['term']} | {row['related_scene']} | {row['status']}" for row in rows]) or "暂无术语记录。"
+        self.notifier.send_interactive_message(chat_id, "Frank 术语学习记录", md, receive_id_type="chat_id")
+
+    def handle_observation_memory(self, chat_id, raw_text):
+        memory = ObservationMemory(DB_PATH)
+        memory.init_schema()
+        runs = memory.list_recent_runs()
+        if not runs:
+            md = "暂无 Observation Memory。你可以先问：`最近有哪些板块值得关注？`"
+        else:
+            lines = []
+            for run in runs:
+                lines.append(f"- #{run['id']} | {run['trade_date']} | {run['status']} | {run['market_summary']}")
+            md = "\n".join(lines)
+        self.notifier.send_interactive_message(chat_id, "Frank Observation Memory", md, receive_id_type="chat_id")
+
     def send_help(self, chat_id):
         help_md = (
             "我是 **Frank Gemini** 🤖，您的 A 股 AI 投资助理。\n\n"
@@ -270,7 +388,7 @@ class FeishuListener:
             "> 对当前所有持仓进行一次整体“体检”，给出加减仓建议。\n\n"
             "6️⃣ **池子**\n"
             "> 查看当前的【观察池】和【持仓池】清单。\n\n"
-            "💡 **进阶玩法**：直接回复某条资讯消息并输入“**审核**”，我会为您深入复核其逻辑。"
+            "💡 **V1.2 玩法**：想看方向可问“最近有哪些板块值得关注”；想看个股可问“上海电力现在能不能买”。"
         )
         self.notifier.send_interactive_message(chat_id, "📖 Frank Gemini 使用指南", help_md, receive_id_type="chat_id")
 

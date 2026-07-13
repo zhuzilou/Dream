@@ -1,0 +1,16 @@
+{"time":"2026-07-12T23:22:16+08:00","role":"coordinator","event":"READINESS_CONFIRMED","detail":"User confirmed role tool assignment and NEW_INSTANCE processing mode."}
+{"time":"2026-07-12T23:22:16+08:00","role":"coordinator","event":"INSTANCE_INITIALIZED","detail":"Created workflow instance skeleton for dream/frank-gemini-agent-v1.2."}
+{"time":"2026-07-12T23:22:16+08:00","role":"coordinator","event":"DEV_INPUT_GENERATED","detail":"Generated dev-input.md for Frank Gemini Agent V1.2 minimal closed-loop implementation."}
+{"time":"2026-07-12T23:22:16+08:00","role":"dev","event":"DEV_STARTED","detail":"Codex starts Dev stage after requirement -> dev gate passed."}
+{"time":"2026-07-12T23:22:16+08:00","role":"dev","event":"TESTS_PASSED","detail":"Full test entrypoint passed: 23 tests OK."}
+{"time":"2026-07-12T23:22:16+08:00","role":"dev","event":"DEV_DONE","detail":"dev-output.md written with implementation summary and evidence paths."}
+{"time":"2026-07-12T23:22:16+08:00","role":"coordinator","event":"DEV_TO_REVIEW_GATE_PASSED","detail":"Dev output, heartbeat, evidence, and review-input verified."}
+{"time":"2026-07-12T23:22:16+08:00","role":"review","event":"REVIEW_STARTED","detail":"Codex starts read-only review of Dev changes."}
+{"time":"2026-07-12T23:22:16+08:00","role":"review","event":"REVIEW_REJECTED","detail":"Blank parent reply remains able to trigger legacy RiskAuditor audit; Dev rework required."}
+{"time":"2026-07-12T23:22:16+08:00","role":"dev","event":"REWORK_TEST_ADDED","detail":"Added regression test for blank parent replies not calling RiskAuditor."}
+{"time":"2026-07-12T23:22:16+08:00","role":"dev","event":"REWORK_DONE","detail":"Fixed Feishu reply handling, updated help text, full test suite passed: 24 tests OK."}
+{"time":"2026-07-12T23:22:16+08:00","role":"review","event":"REVIEW_PASSED","detail":"Re-review passed; legacy audit user entry no longer reachable and regression coverage exists."}
+{"time":"2026-07-12T23:22:16+08:00","role":"coordinator","event":"QA_INPUT_GENERATED","detail":"Generated qa-input.md after Review passed."}
+{"time":"2026-07-12T23:22:16+08:00","role":"qa","event":"QA_PASSED","detail":"Full tests passed: 24 tests OK; banned phrase and legacy audit reachability scans acceptable."}
+{"time":"2026-07-12T23:22:16+08:00","role":"delivery","event":"DELIVERY_READY","detail":"Delivery summary generated with verification evidence and residual live-integration risk."}
+{"time":"2026-07-13T00:00:00+08:00","role":"delivery","event":"DELIVERABLE","detail":"Delivery final gate passed; final conclusion updated to DELIVERABLE with key evidence paths."}

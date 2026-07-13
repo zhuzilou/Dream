@@ -1,0 +1,11 @@
+{
+  "workflow_instance": "dream/frank-gemini-agent-v1.2",
+  "role": "coordinator",
+  "tool": "Codex",
+  "status": "ACTIVE",
+  "current_step": "workflow instance initialized and dev-input generated",
+  "last_progress_at": "2026-07-12T23:22:16+08:00",
+  "next_expected_update_at": "2026-07-12T23:32:16+08:00",
+  "latest_artifact": "dev-input.md",
+  "blocked_reason": ""
+}

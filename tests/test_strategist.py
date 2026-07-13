@@ -26,7 +26,7 @@ class TestStrategist(unittest.TestCase):
             'low': [9.0] * 30
         })
 
-    def test_generate_plan_buy_signal(self):
+    def test_generate_plan_uses_v12_conditional_language(self):
         ai_analysis = {
             "sentiment_score": 8,
             "summary": "重大利好"
@@ -36,8 +36,16 @@ class TestStrategist(unittest.TestCase):
         plan = self.advisor.generate_plan("300750", current_price, self.mock_hist, ai_analysis)
         
         self.assertIsNotNone(plan)
-        self.assertIn("建仓", plan["action"])
+        self.assertIn(plan["action"], ["可轻仓试错", "等待确认", "可观察"])
         self.assertIsNotNone(plan["buy_price"])
+        all_text = " ".join([
+            str(plan.get("action", "")),
+            str(plan.get("reason", "")),
+            str(plan.get("scenario_text", "")),
+            str(plan.get("position_advice", ""))
+        ])
+        for banned in ["建议建仓", "建议加仓", "最佳补仓点", "严禁入场", "果断减仓"]:
+            self.assertNotIn(banned, all_text)
 
     def test_generate_plan_wait_signal(self):
         ai_analysis = {

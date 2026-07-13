@@ -1,0 +1,11 @@
+Command:
+rg -n "建议建仓|建议加仓|最佳补仓点|严禁入场|果断减仓|必买|必卖" src doc/manuals tests
+
+Result:
+Matches only in test assertions:
+- tests/test_v12_agent_workflow.py
+- tests/test_strategist.py
+
+No matches in:
+- src/
+- doc/manuals/

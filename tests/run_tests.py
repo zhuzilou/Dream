@@ -2,7 +2,11 @@ import unittest
 import os
 import sys
 from unittest.mock import MagicMock
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv():
+        return False
 
 def setup_mocks():
     """为缺少库的环境设置 Mock，防止自检崩溃"""
@@ -17,6 +21,16 @@ def setup_mocks():
     if 'schedule' not in sys.modules:
         sys.modules['schedule'] = MagicMock()
         print("💡 环境提示: schedule 未安装，已启用 Mock 模式。")
+
+    if 'requests' not in sys.modules:
+        sys.modules['requests'] = MagicMock()
+        print("💡 环境提示: requests 未安装，已启用 Mock 模式。")
+
+    if 'loguru' not in sys.modules:
+        mock_loguru = MagicMock()
+        mock_loguru.logger = MagicMock()
+        sys.modules['loguru'] = mock_loguru
+        print("💡 环境提示: loguru 未安装，已启用 Mock 模式。")
 
 def run_all_tests():
     print("🔍 开始执行 Frank Gemini 系统自检...\n")

@@ -1,0 +1,11 @@
+{
+  "workflow_instance": "dream/frank-gemini-agent-v1.2",
+  "role": "review",
+  "tool": "Codex",
+  "status": "DONE",
+  "current_step": "re-review passed after Dev fixed legacy audit boundary issue",
+  "last_progress_at": "2026-07-12T23:22:16+08:00",
+  "next_expected_update_at": "2026-07-12T23:32:16+08:00",
+  "latest_artifact": "review-result.md",
+  "blocked_reason": ""
+}

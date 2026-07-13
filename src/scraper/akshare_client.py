@@ -199,3 +199,66 @@ def get_market_index_data() -> pd.DataFrame:
     except Exception as e:
         logger.error(f"Error fetching market index data: {e}")
     return pd.DataFrame()
+
+
+def collect_board_observation_inputs(max_boards: int = 3) -> list:
+    """采集场景二所需的板块与成份股结构化输入。"""
+    boards = []
+    try:
+        board_df = ak.stock_board_industry_name_em()
+        if board_df is None or board_df.empty:
+            return boards
+
+        for _, row in board_df.head(max_boards).iterrows():
+            board_name = _first_present(row, ["板块名称", "名称", "行业名称"])
+            if not board_name:
+                continue
+
+            stocks = []
+            try:
+                cons_df = ak.stock_board_industry_cons_em(symbol=board_name)
+                if cons_df is not None and not cons_df.empty:
+                    for _, stock_row in cons_df.head(10).iterrows():
+                        name = str(_first_present(stock_row, ["名称", "股票简称", "证券简称"]) or "")
+                        stocks.append({
+                            "symbol": str(_first_present(stock_row, ["代码", "股票代码", "证券代码"]) or ""),
+                            "name": name,
+                            "turnover": _safe_float(_first_present(stock_row, ["成交额", "成交金额"])),
+                            "change_pct": _safe_float(_first_present(stock_row, ["涨跌幅", "涨幅"])),
+                            "is_st": "ST" in name.upper(),
+                            "is_suspended": False
+                        })
+            except Exception as e:
+                logger.warning(f"Error fetching board constituents for {board_name}: {e}")
+
+            boards.append({
+                "board_name": str(board_name),
+                "change_pct": _safe_float(_first_present(row, ["涨跌幅", "涨幅"])),
+                "net_inflow": _safe_float(_first_present(row, ["主力净流入", "净流入", "资金净流入"])),
+                "turnover": _safe_float(_first_present(row, ["成交额", "成交金额"])),
+                "sustainability": 0.5,
+                "beginner_friendliness": 0.5,
+                "stocks": stocks
+            })
+    except Exception as e:
+        logger.error(f"Error collecting board observation inputs: {e}")
+    return boards
+
+
+def _first_present(row, keys):
+    for key in keys:
+        try:
+            if key in row and row[key] is not None:
+                return row[key]
+        except Exception:
+            continue
+    return None
+
+
+def _safe_float(value):
+    try:
+        if value in [None, ""]:
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0

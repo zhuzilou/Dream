@@ -1,0 +1,21 @@
+Command:
+/Users/zhuzilou/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+
+Result:
+Ran 24 tests in 0.071s
+
+OK
+
+Summary:
+- Review rework regression passed: blank parent replies do not fetch parent content or call RiskAuditor.
+- V1.2 intent routing tests passed.
+- Scenario 1 stock-decision tests passed.
+- Scenario 2 board observation and persistence tests passed.
+- Observation Memory tests passed.
+- Term Learning Queue tests passed.
+- Shared output renderer tests passed.
+- Existing analyst, Feishu, risk auditor, strategist, and legacy command tests passed.
+
+Environment notes:
+- Test runner used mocks for missing local packages: akshare, schedule, requests, loguru.
+- This avoids external network/API dependencies during unit self-check.

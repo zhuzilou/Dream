@@ -1,0 +1,11 @@
+{
+  "workflow_instance": "dream/frank-gemini-agent-v1.2",
+  "role": "delivery",
+  "tool": "Codex",
+  "status": "DONE",
+  "current_step": "delivery final gate passed",
+  "last_progress_at": "2026-07-12T23:22:16+08:00",
+  "next_expected_update_at": "2026-07-12T23:32:16+08:00",
+  "latest_artifact": "delivery-summary.md, transition-gate-checklist.md",
+  "blocked_reason": ""
+}

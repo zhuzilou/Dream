@@ -17,6 +17,12 @@ if src_path not in sys.path:
 sys.modules['schedule'] = MagicMock()
 if 'akshare' not in sys.modules:
     sys.modules['akshare'] = MagicMock()
+if 'pandas' not in sys.modules:
+    mock_pandas = MagicMock()
+    mock_pandas.DataFrame = MagicMock
+    sys.modules['pandas'] = mock_pandas
+if 'numpy' not in sys.modules:
+    sys.modules['numpy'] = MagicMock()
 if 'requests' not in sys.modules:
     sys.modules['requests'] = MagicMock()
 if 'loguru' not in sys.modules:
@@ -122,14 +128,14 @@ class TestFunctionalCommands(unittest.TestCase):
 
     @patch("listener.feishu_listener.resolve_stock_symbol")
     def test_natural_language_analysis_extracts_stock_name(self, mock_resolve):
-        """验证自然语言问题能提取股票名并进入分析链路"""
+        """验证自然语言问题能提取股票名并进入场景一"""
         def fake_resolve(query):
             if query == "上海电力":
                 return {'symbol': '600021', 'name': '上海电力'}
             return None
 
         mock_resolve.side_effect = fake_resolve
-        self.listener.process_instant_analysis = MagicMock()
+        self.listener.handle_stock_decision = MagicMock()
 
         mock_event = MagicMock()
         mock_event.event.message.message_id = "msg_natural_analysis"
@@ -140,10 +146,17 @@ class TestFunctionalCommands(unittest.TestCase):
 
         self.listener.handle_message(mock_event)
 
-        self.listener.process_instant_analysis.assert_called_once_with("chat_123", "600021", "上海电力")
+        self.listener.handle_stock_decision.assert_called_once_with(
+            "chat_123",
+            "600021",
+            "上海电力",
+            "分析下上海电力的走势情况，是否有合适的买入点"
+        )
 
-    def test_recommendation_request_gets_guided_response(self):
-        """验证推荐类请求不会落入无数据支撑的普通闲聊"""
+    def test_recommendation_request_enters_board_observation(self):
+        """验证推荐类请求进入场景二而不是旧荐股逻辑"""
+        self.listener.handle_board_observation = MagicMock()
+
         mock_event = MagicMock()
         mock_event.event.message.message_id = "msg_recommend"
         mock_event.event.message.chat_id = "chat_123"
@@ -153,10 +166,72 @@ class TestFunctionalCommands(unittest.TestCase):
 
         self.listener.handle_message(mock_event)
 
-        self.assertTrue(self.listener.notifier.send_interactive_message.called)
+        self.listener.handle_board_observation.assert_called_once_with("chat_123", "不知道买什么，帮我推荐几支股票")
+
+    def test_audit_command_is_deprecated_main_flow(self):
+        """验证审核不再进入 RiskAuditor 主流程"""
+        self.listener.handle_audit = MagicMock()
+
+        mock_event = MagicMock()
+        mock_event.event.message.message_id = "msg_audit"
+        mock_event.event.message.chat_id = "chat_123"
+        mock_event.event.message.content = json.dumps({"text": "审核"})
+        mock_event.event.message.parent_id = None
+        mock_event.event.message.root_id = None
+
+        self.listener.handle_message(mock_event)
+
+        self.listener.handle_audit.assert_not_called()
         args = self.listener.notifier.send_interactive_message.call_args[0]
-        self.assertIn("选股", args[1])
-        self.assertIn("观察池", args[2])
+        self.assertIn("已降级", args[2])
+        self.assertIn("具体股票", args[2])
+
+    def test_blank_parent_reply_does_not_trigger_risk_auditor(self):
+        """验证空白回复父消息不会绕过 V1.2 降级边界进入 RiskAuditor"""
+        self.listener.handle_audit = MagicMock()
+        self.listener.notifier.get_message_content = MagicMock(return_value="父消息里的一段市场观点")
+
+        mock_event = MagicMock()
+        mock_event.event.message.message_id = "msg_blank_reply"
+        mock_event.event.message.chat_id = "chat_123"
+        mock_event.event.message.content = json.dumps({"text": ""})
+        mock_event.event.message.parent_id = "parent_msg_1"
+        mock_event.event.message.root_id = None
+
+        self.listener.handle_message(mock_event)
+
+        self.listener.notifier.get_message_content.assert_not_called()
+        self.listener.handle_audit.assert_not_called()
+        args = self.listener.notifier.send_interactive_message.call_args[0]
+        self.assertIn("已降级", args[2])
+
+    def test_init_db_creates_v12_memory_tables(self):
+        """验证 V1.2 记忆表会随数据库初始化创建"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        for table in [
+            "observation_runs",
+            "observation_boards",
+            "observation_stocks",
+            "observation_reviews",
+            "term_learning_queue"
+        ]:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+            self.assertIsNotNone(cursor.fetchone(), table)
+
+        conn.close()
+
+    def test_legacy_news_push_scheduler_disabled_by_default(self):
+        """验证定时新闻直接推送默认不再作为主功能注册"""
+        if "FRANK_ENABLE_LEGACY_NEWS_PUSH" in os.environ:
+            del os.environ["FRANK_ENABLE_LEGACY_NEWS_PUSH"]
+
+        main.schedule.reset_mock()
+
+        main.configure_scheduler()
+
+        self.assertFalse(main.schedule.every.called)
 
 if __name__ == "__main__":
     unittest.main()

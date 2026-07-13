@@ -1,0 +1,51 @@
+{
+  "workflow_instance": "dream/frank-gemini-agent-v1.2",
+  "project": "/Users/zhuzilou/workspace/ai/gemini/Dream",
+  "feature": "Frank Gemini Agent V1.2",
+  "status": "DELIVERABLE",
+  "current_stage": "delivery",
+  "instance_mode": "NEW_INSTANCE",
+  "created_at": "2026-07-12T23:22:16+08:00",
+  "updated_at": "2026-07-12T23:22:16+08:00",
+  "roles": {
+    "coordinator": "Codex",
+    "dev": "Codex",
+    "review": "Codex",
+    "qa": "Codex",
+    "delivery": "Codex"
+  },
+  "stage_states": {
+    "requirement": "DEV_INPUT_READY",
+    "dev": "DEV_DONE",
+    "review": "REVIEW_PASSED",
+    "qa": "QA_PASSED",
+    "delivery": "DELIVERABLE"
+  },
+  "progress": {
+    "heartbeat_files": [
+      "coordinator-heartbeat.json",
+      "dev-heartbeat.json",
+      "review-heartbeat.json",
+      "qa-heartbeat.json",
+      "delivery-heartbeat.json"
+    ],
+    "latest_event": "Delivery gate passed and final conclusion is DELIVERABLE"
+  },
+  "source_documents": [
+    "/Users/zhuzilou/.codex/attachments/8816789a-d1f0-4bab-a270-06850ebbc226/pasted-text-1.txt",
+    "/Users/zhuzilou/Documents/multi-agents-design/START_HERE.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/USAGE.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/roles/coordinator.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/roles/dev-agent.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/roles/review-agent.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/roles/qa-agent.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/roles/delivery-agent.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/doc/agent-workflow/workflow-runtime-gates.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/doc/agent-workflow/heartbeat-and-progress-rules.md",
+    "/Users/zhuzilou/Documents/multi-agents-design/doc/agent-workflow/subagent-progress-relay-rules.md",
+    "/Users/zhuzilou/workspace/ai/gemini/Dream/doc/design/PRD-Frank-Gemini-Agent-V1.2.md",
+    "/Users/zhuzilou/workspace/ai/gemini/Dream/doc/design/Frank-Gemini-职能规划与小白友好设计原则.md",
+    "/Users/zhuzilou/workspace/ai/gemini/Dream/doc/design/Frank-Gemini-V1.2-Legacy-功能处置说明.md"
+  ],
+  "blocked_reason": ""
+}

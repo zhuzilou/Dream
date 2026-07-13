@@ -70,29 +70,29 @@ class TradeAdvisor:
         if score >= 6: # 极佳
             if trend != "空头排列 (弱趋势)":
                 if not has_pos:
-                    plan["action"] = "建议建仓"
+                    plan["action"] = "可轻仓试错"
                     plan["buy_price"] = round(max(current_price * 0.99, support), 2)
                     plan["confidence"] = "中高" if not is_fallback else "中"
                     plan["position_advice"] = "首次只建观察仓，建议不超过计划仓位的 20%-30%。"
-                    reasons.append(f"AI 评分极高({score})，技术面未走坏。建议在支撑位附近建立底仓。")
-                    scenarios.append(f"1. **如果** 明日企稳并放量突破 {resistance}，可追加 1 成仓。")
-                    scenarios.append(f"2. **如果** 缩量回踩 {support} 不破，是最佳补仓点。")
+                    reasons.append(f"AI 评分较高({score})，技术面暂未走坏，可观察支撑位附近是否出现低风险试错条件。")
+                    scenarios.append(f"1. **如果** 明日企稳并放量突破 {resistance}，条件满足时可以考虑小比例试错。")
+                    scenarios.append(f"2. **如果** 缩量回踩 {support} 不破，可继续观察是否形成更稳的确认点。")
                     plan["trigger_conditions"].extend([
                         f"股价企稳并放量突破压力位 {resistance}",
                         f"回踩支撑位 {support} 附近不破且成交量未异常放大"
                     ])
                 else:
-                    plan["action"] = "建议加仓"
+                    plan["action"] = "可观察"
                     plan["confidence"] = "中高" if not is_fallback else "中"
                     plan["position_advice"] = "已有持仓只考虑分批加仓，单次不超过现有仓位的 20%。"
-                    reasons.append(f"AI 持续利好({score})。现有持仓 {pos_qty}，可考虑回撤支撑位时加仓。")
+                    reasons.append(f"AI 持续偏暖({score})。现有持仓 {pos_qty}，可观察回撤支撑位时是否仍守住失效条件。")
                     scenarios.append(f"1. **如果** 股价站稳 {current_price}，建议持股待涨。")
                     plan["trigger_conditions"].extend([
                         f"股价站稳当前价 {current_price}",
                         f"回撤不跌破支撑位 {support}"
                     ])
             else:
-                plan["action"] = "等待筑底"
+                plan["action"] = "等待确认"
                 plan["confidence"] = "中"
                 plan["position_advice"] = "不追高，不加仓，只等待筑底确认。"
                 reasons.append(f"AI 虽利好，但技术面处于下降通道，建议观察支撑位 {support} 是否稳固。")
@@ -108,26 +108,26 @@ class TradeAdvisor:
                 scenarios.append(f"1. **如果** 跌破 {support}，建议先行减仓规避风险。")
                 plan["trigger_conditions"].append(f"股价继续维持在支撑位 {support} 上方")
             else:
-                plan["action"] = "分批轻仓"
+                plan["action"] = "可轻仓试错"
                 plan["confidence"] = "中"
                 plan["position_advice"] = "仅适合轻仓试探，建议不超过计划仓位的 10%-20%。"
-                reasons.append("情绪中性偏好，可小量试探。")
+                reasons.append("情绪中性偏好，但仍需用小仓位验证，条件不满足时继续观察。")
                 plan["trigger_conditions"].append(f"股价不跌破支撑位 {support} 且板块情绪未走弱")
                 
         elif score <= -6: # 极差
             if has_pos:
-                plan["action"] = "建议减仓/清仓"
+                plan["action"] = "降低仓位风险"
                 plan["confidence"] = "高" if not is_fallback else "中高"
-                plan["position_advice"] = "优先保护本金，可分批减仓；若跌破失效条件，执行硬止损。"
+                plan["position_advice"] = "优先控制风险，可按失效条件降低仓位暴露，最终操作由用户决定。"
                 reasons.append(f"🚨 AI 提示重大利空({score})。技术面风险大，建议保护利润或止损。")
-                scenarios.append(f"1. **如果** 明日不能快速收复 {current_price}，建议果断减仓 50%。")
-                scenarios.append(f"2. **如果** 连续放量杀跌，则考虑空仓避险。")
+                scenarios.append(f"1. **如果** 明日不能快速收复 {current_price}，可考虑先降低仓位风险。")
+                scenarios.append(f"2. **如果** 连续放量杀跌，应以回避风险为主。")
                 plan["trigger_conditions"].append("出现反弹但无法收复关键价位时优先减仓")
             else:
                 plan["action"] = "回避风险"
                 plan["confidence"] = "高" if not is_fallback else "中高"
                 plan["position_advice"] = "不新开仓，等待利空消化和技术面修复。"
-                reasons.append(f"AI 评分极低({score})，严禁入场。")
+                reasons.append(f"AI 评分偏低({score})，暂不满足买入条件。")
                 scenarios.append(f"1. **如果** 市场整体情绪未回暖，哪怕出现小反弹也不要进场抢反弹。")
                 plan["trigger_conditions"].append("暂不设置买入触发，先等待风险释放")
         else:

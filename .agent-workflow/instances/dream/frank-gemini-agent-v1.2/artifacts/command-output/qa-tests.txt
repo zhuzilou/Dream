@@ -1,0 +1,11 @@
+Command:
+/Users/zhuzilou/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 tests/run_tests.py
+
+Result:
+Ran 24 tests in 0.110s
+
+OK
+
+Summary:
+- V1.2 routing, Scenario 1, Scenario 2, Observation Memory, Term Learning, Legacy isolation, and deprecated audit behavior passed.
+- Test runner used mocks for unavailable external packages.
